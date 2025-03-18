@@ -49,7 +49,7 @@ if(BUILD_WITH_CUDA)
   FetchContent_Declare(
     cudawrappers
     GIT_REPOSITORY https://github.com/nlesc-recruit/cudawrappers.git
-    GIT_TAG 0.5.0)
+    GIT_TAG 0.4.0)
   FetchContent_MakeAvailable(cudawrappers)
 
 else()
@@ -403,6 +403,7 @@ add_library(
   ddecal/gain_solvers/FullJonesSolver.cc
   ddecal/gain_solvers/HybridSolver.cc
   ddecal/gain_solvers/IterativeDiagonalSolver.cc
+  ddecal/gain_solvers/IterativeDiagonalSolverCuda.cc
   ddecal/gain_solvers/IterativeFullJonesSolver.cc
   ddecal/gain_solvers/IterativeScalarSolver.cc
   ddecal/gain_solvers/ScalarSolver.cc

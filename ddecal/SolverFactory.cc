@@ -82,8 +82,8 @@ std::unique_ptr<SolverBase> CreateDiagonalSolver(SolverAlgorithm algorithm,
     switch (algorithm) {
       case SolverAlgorithm::kDirectionIterative:
         if (settings.solver_data_use == SolverDataUse::kFull)
-          return std::make_unique<IterativeDiagonalSolverCuda>(
-              settings.keep_host_buffers);
+          return std::make_unique<IterativeDiagonalSolverCuda<aocommon::MC2x2F>>(
+          );// settings.keep_host_buffers);
         break;
       default:
         break;

@@ -4,22 +4,20 @@
 #ifndef DDECAL_GAIN_SOLVERS_ITERATIVE_DIAGONAL_SOLVER_CUDA_H_
 #define DDECAL_GAIN_SOLVERS_ITERATIVE_DIAGONAL_SOLVER_CUDA_H_
 
-#include <vector>
-
 #include <cudawrappers/cu.hpp>
 
-#include "IterativeDiagonalSolver.h"
 #include "SolverBase.h"
 #include "SolveData.h"
-#include "../../common/Timer.h"
 
 namespace dp3 {
 namespace ddecal {
 
+template<typename VisMatrix = aocommon::MC2x2F>
 class IterativeDiagonalSolverCuda final : public SolverBase {
  public:
-  IterativeDiagonalSolverCuda(bool keep_buffers = false);
-  SolveResult Solve(const SolveData& data,
+  using ChannelBlockData = typename SolveData<VisMatrix>::ChannelBlockData;
+  // IterativeDiagonalSolverCuda(bool keep_buffers = false);
+  SolveResult Solve(const SolveData<VisMatrix>& data,
                     std::vector<std::vector<DComplex>>& solutions, double time,
                     std::ostream* stat_stream) override;
 
@@ -27,18 +25,40 @@ class IterativeDiagonalSolverCuda final : public SolverBase {
 
   bool SupportsDdSolutionIntervals() const override { return true; }
 
+
  private:
-  void AllocateGPUBuffers(const SolveData& data);
+  void PerformIteration(bool phase_only, double step_size,
+    const ChannelBlockData& channel_block_data,
+    cu::Stream& stream, size_t n_antennas, size_t n_solutions,
+    size_t n_directions, cu::DeviceMemory& device_solution_map,
+    cu::DeviceMemory& device_solutions, cu::DeviceMemory& device_next_solutions,
+    cu::DeviceMemory& device_residual, cu::DeviceMemory& device_residual_temp,
+    cu::DeviceMemory& device_model, cu::DeviceMemory& device_antenna_pairs,
+    cu::DeviceMemory& device_numerator, cu::DeviceMemory& device_denominator);
+  
+  void SolveDirection( const ChannelBlockData& channel_block_data,
+    cu::Stream& stream, size_t n_antennas, size_t n_solutions, size_t direction,
+    cu::DeviceMemory& device_residual_in,
+    cu::DeviceMemory& device_residual_temp,
+    cu::DeviceMemory& device_solution_map, cu::DeviceMemory& device_solutions,
+    cu::DeviceMemory& device_model, cu::DeviceMemory& device_next_solutions,
+    cu::DeviceMemory& device_antenna_pairs, cu::DeviceMemory& device_numerator,
+    cu::DeviceMemory& device_denominator);
+
+  std::tuple <size_t, size_t, size_t> ComputeArrayDimensions(const SolveData<VisMatrix>& data);
+
+
+  void AllocateGPUBuffers(const SolveData<VisMatrix>& data);
   void DeallocateHostBuffers();
-  void AllocateHostBuffers(const SolveData& data);
+  void AllocateHostBuffers(const SolveData<VisMatrix>& data);
 
   void CopyHostToHost(size_t ch_block, bool first_iteration,
-                      const SolveData& data,
+                      const SolveData<VisMatrix>& data,
                       const std::vector<DComplex>& solutions,
                       cu::Stream& stream);
 
   void CopyHostToDevice(size_t ch_block, size_t buffer_id, cu::Stream& stream,
-                        cu::Event& event, const SolveData& data);
+                        cu::Event& event, const SolveData<VisMatrix>& data);
 
   void PostProcessing(size_t& iteration, double time,
                       bool has_previously_converged, bool& has_converged,
@@ -133,6 +153,9 @@ class IterativeDiagonalSolverCuda final : public SolverBase {
     std::vector<cu::HostMemory> solution_map;
   } host_buffers_;
 };
+
+extern template class IterativeDiagonalSolverCuda<aocommon::MC2x2F>;
+extern template class IterativeDiagonalSolverCuda<aocommon::MC2x2FDiag>;
 
 }  // namespace ddecal
 }  // namespace dp3
