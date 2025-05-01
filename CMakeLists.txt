@@ -432,7 +432,9 @@ if(BUILD_WITH_CUDA)
   # when DP3 is built in debug mode
   add_library(
     CudaSolvers STATIC ddecal/gain_solvers/IterativeDiagonalSolverCuda.cc
-                       ddecal/gain_solvers/kernels/IterativeDiagonal.cu)
+          ddecal/gain_solvers/kernels/IterativeDiagonal.cu
+          ddecal/gain_solvers/IterativeScalarSolverCuda.cc
+          ddecal/gain_solvers/kernels/IterativeScalar.cu)
 
   target_compile_options(
     CudaSolvers
