@@ -42,6 +42,29 @@ namespace {
 
 std::unique_ptr<SolverBase> CreateScalarSolver(SolverAlgorithm algorithm,
                                                const Settings& settings) {
+#if defined(HAVE_CUDA_SOLVER)
+  if (settings.use_gpu) {
+    switch (algorithm) {
+      case SolverAlgorithm::kDirectionIterative:
+        if (settings.solver_data_use == SolverDataUse::kSingle)
+          return std::make_unique<
+              IterativeScalarSolverCuda<std::complex<float>>>(
+              settings.keep_host_buffers);
+        break;
+      default:
+        break;
+    }
+    throw std::runtime_error(
+        "usegpu=true, but no GPU implementation for solver algorithm is "
+        "available.");
+  }
+#else
+  if (settings.use_gpu) {
+    throw std::runtime_error(
+        "usegpu=true, but DP3 is built without CUDA support.");
+  }
+#endif
+
   switch (algorithm) {
     case SolverAlgorithm::kDirectionIterative:
       switch (settings.solver_data_use) {
