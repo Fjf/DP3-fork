@@ -441,7 +441,7 @@ SolverBase::SolveResult IterativeDiagonalSolverCuda<VisMatrix>::Solve(
       // Start iteration (dtod copies and kernel execution only)
       PerformIteration<VisMatrix>(
           phase_only, step_size, channel_block_data, *execute_stream_,
-          NAntennas(), NSolutions(), NDirections(),
+          NAntennas(), NSubSolutions(), NDirections(),
           gpu_buffers_.solution_map[buffer_id],
           gpu_buffers_.solutions[buffer_id],
           gpu_buffers_.next_solutions[buffer_id],
