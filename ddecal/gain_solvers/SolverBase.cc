@@ -324,16 +324,25 @@ void SolverBase::MakeSolutionsFinite2Pol(
   // In the solvers/diagonal test, the total loop took 8 microseconds while
   // it took 14 microseconds, on average, when using StaticFor.
   for (std::vector<DComplex>& solution_vector : solutions) {
+    std::cout << "MakeSolutionsFinite2Pol: "
+              << "solution_vector.size() = " << solution_vector.size()
+              << std::endl;
     // Find the average abs solution for this channel
     size_t count = 0;
     double average[2] = {0.0, 0.0};
     for (std::vector<DComplex>::iterator iter = solution_vector.begin();
-         iter != solution_vector.end(); iter += 2) {
+         iter <= solution_vector.end(); iter += 2) {
+          std::cout << "MakeSolutionsFinite2Pol: "
+                    << "iter = " << count << ", size = " << solution_vector.size()
+                    << std::endl;
       if (IsFinite(*iter) && IsFinite(*(iter + 1))) {
         for (size_t p = 0; p != 2; ++p) average[p] += std::abs(iter[0]);
         ++count;
       }
     }
+    std::cout << "MakeSolutionsFinite2Pol: "
+              << "count = " << count << ", average[0] = " << average[0]
+              << ", average[1] = " << average[1] << std::endl;
     if (count == 0) {
       average[0] = 1.0;
       average[1] = 1.0;

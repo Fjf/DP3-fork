@@ -14,6 +14,7 @@
 #include <aocommon/matrix2x2diag.h>
 
 #include "kernels/IterativeScalar.h"
+#include "kernels/IterativeDiagonal.h"
 
 using aocommon::MC2x2F;
 using aocommon::MC2x2FDiag;
@@ -142,7 +143,7 @@ void PerformIteration(
         device_antenna_pairs, device_numerator, device_denominator);
   }
 
-  LaunchScalarStepKernel(stream, n_visibilities, device_solutions,
+  LaunchStepKernel(stream, n_visibilities, device_solutions,
                    device_next_solutions, phase_only, step_size);
 }
 
@@ -543,8 +544,11 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
    * Allocate events for each channel block
    */
   std::vector<cu::Event> input_copied_events(NChannelBlocks());
+  std::cout << "DEBUG: Solution span created successfully" << std::endl;
   std::vector<cu::Event> compute_finished_events(NChannelBlocks());
+  std::cout << "DEBUG: Creating compute_finished_events" << std::endl;
   std::vector<cu::Event> output_copied_events(NChannelBlocks());
+  std::cout << "DEBUG: Creating output_copied_events" << std::endl;
 
   /*
    * Start iterating
@@ -557,18 +561,22 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
 
   std::vector<double> step_magnitudes;
   step_magnitudes.reserve(GetMaxIterations());
-
+  std::cout << "DEBUG: Step magnitudes reserved for max iterations: "
+            << GetMaxIterations() << std::endl;
   do {
-    MakeSolutionsFinite2Pol(solutions);
+    MakeSolutionsFinite1Pol(solutions);
+    std::cout << "DEBUG: Solutions made finite for iteration " << iteration << std::endl;
 
     nvtxRangeId_t nvts_range_gpu = nvtxRangeStart("GPU");
 
     for (size_t ch_block = 0; ch_block < NChannelBlocks(); ch_block++) {
+      std::cout << "DEBUG: Processing channel block " << ch_block << std::endl;
       const ChannelBlockData<VisMatrix>& channel_block_data =
           data.ChannelBlock(ch_block);
       const int buffer_id = ch_block % 2;
       // Copy input data for first channel block
       if (ch_block == 0) {
+        std::cout << "DEBUG: Copying host to host for channel block " << ch_block << std::endl;
         CopyHostToHost(ch_block, iteration == 0, data, solutions[ch_block],
                        *host_to_device_stream_);
 
@@ -593,7 +601,8 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
         if (ch_block > 1) {
           host_to_device_stream_->wait(compute_finished_events[ch_block - 2]);
         }
-
+        std::cout << "DEBUG: Copying host to device for channel block "
+                  << (ch_block + 1) << std::endl;
         CopyHostToDevice(ch_block + 1, (ch_block + 1) % 2,
                          *host_to_device_stream_,
                          input_copied_events[ch_block + 1], data);

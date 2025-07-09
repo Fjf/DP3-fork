@@ -12,6 +12,15 @@
 
 #define BLOCK_SIZE 128
 
+#define cudaCheckError() {                                      \
+ cudaError_t e=cudaGetLastError();                                 \
+ printf("testing cudaCheckError %s:%d\n",__FILE__,__LINE__); \
+ if(e!=cudaSuccess) {                                              \
+   printf("Cuda failure %s:%d: '%s'\n",__FILE__,__LINE__,cudaGetErrorString(e));           \
+   exit(0); \
+ }                                                                 \
+}
+
 template <bool Add>
 __device__ void AddOrSubtractScalar(size_t vis_index, size_t n_solutions,
                               const unsigned int* antenna_pairs,
@@ -155,6 +164,8 @@ void LaunchScalarSolveDirectionKernel(
       Cast<const cuM2x2FloatComplex>(residual_in),
       Cast<cuM2x2FloatComplex>(residual_temp), Cast<cuFloatComplex>(numerator),
       Cast<float>(denominator));
+
+  cudaCheckError();
 }
 
 __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
@@ -181,7 +192,7 @@ __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
         residual, residual);  // in-place
   }
 }
-
+// TODO: Error is here, fix please
 void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
                           size_t n_visibilities, size_t n_solutions,
                           cu::DeviceMemory& antenna_pairs,
@@ -197,6 +208,7 @@ void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
       Cast<const unsigned int>(solution_map),
       Cast<const cuDoubleComplex>(solutions), Cast<const cuFloatComplex>(model),
       Cast<cuM2x2FloatComplex>(residual));
+  cudaCheckError();
 }
 
 __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
@@ -245,10 +257,13 @@ void LaunchScalarSolveNextSolutionKernel(
   const size_t direction_offset = direction * n_visibilities;
   const unsigned int* solution_map_direction =
       Cast<const unsigned int>(solution_map) + direction_offset;
+  cudaCheckError();
+  // TODO: Error is here, fix please
   SolveNextScalarSolutionKernel<<<grid_dim, block_dim, 0, stream>>>(
       n_antennas, n_direction_solutions, n_solutions, solution_map_direction,
       Cast<const cuFloatComplex>(numerator), Cast<const float>(denominator),
       Cast<cuDoubleComplex>(next_solutions));
+  cudaCheckError();
 }
 
 __global__ void StepScalarKernel(const size_t n_visibilities,
@@ -286,8 +301,10 @@ void LaunchScalarStepKernel(cudaStream_t stream, size_t n_visibilities,
                       double step_size) {
   const size_t block_dim = BLOCK_SIZE;
   const size_t grid_dim = (n_visibilities + block_dim) / block_dim;
+  cudaCheckError();
 
   StepScalarKernel<<<grid_dim, block_dim, 0, stream>>>(
       n_visibilities, Cast<const cuDoubleComplex>(solutions),
       Cast<cuDoubleComplex>(next_solutions), phase_only, step_size);
+  cudaCheckError();
 }
