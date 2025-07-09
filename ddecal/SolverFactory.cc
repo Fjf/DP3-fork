@@ -15,6 +15,7 @@
 #include "gain_solvers/IterativeDiagonalSolver.h"
 #if defined(HAVE_CUDA_SOLVER)
 #include "gain_solvers/IterativeDiagonalSolverCuda.h"
+#include "gain_solvers/IterativeScalarSolverCuda.h"
 #endif
 #include "gain_solvers/IterativeFullJonesSolver.h"
 #include "gain_solvers/IterativeScalarSolver.h"

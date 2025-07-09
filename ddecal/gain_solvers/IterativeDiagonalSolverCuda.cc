@@ -212,13 +212,86 @@ void IterativeDiagonalSolverCuda<VisMatrix>::AllocateGPUBuffers(
     gpu_buffers_.residual.emplace_back(
         SizeOfResidual<VisMatrix>(max_n_visibilities));
   }
+
+  try {
+    // Verify that device memory allocations succeeded
+    for (const auto& mem : gpu_buffers_.antenna_pairs) {
+      if (!mem) throw std::runtime_error("antenna_pairs buffer allocation failed");
+    }
+    for (const auto& mem : gpu_buffers_.solution_map) {
+      if (!mem) throw std::runtime_error("solution_map buffer allocation failed");
+    }
+    for (const auto& mem : gpu_buffers_.solutions) {
+      if (!mem) throw std::runtime_error("solutions buffer allocation failed");
+    }
+    for (const auto& mem : gpu_buffers_.next_solutions) {
+      if (!mem) throw std::runtime_error("next_solutions buffer allocation failed");
+    }
+    for (const auto& mem : gpu_buffers_.model) {
+      if (!mem) throw std::runtime_error("model buffer allocation failed");
+    }
+    for (const auto& mem : gpu_buffers_.residual) {
+      if (!mem) throw std::runtime_error("residual buffer allocation failed");
+    }
+
+    // Verify unique_ptr managed buffers
+    if (!gpu_buffers_.numerator) {
+      throw std::runtime_error("numerator buffer allocation failed");
+    }
+    if (!gpu_buffers_.denominator) {
+      throw std::runtime_error("denominator buffer allocation failed");
+    }
+
+    // Verify CUDA device has enough memory
+    size_t free, total;
+    cudaMemGetInfo(&free, &total);
+    if (free < total * 0.1) { // Less than 10% free memory
+      throw std::runtime_error("Insufficient GPU memory available");
+    }
+
+  } catch (const std::exception& e) {
+    // Clean up any allocated buffers
+    gpu_buffers_.antenna_pairs.clear();
+    gpu_buffers_.solution_map.clear();
+    gpu_buffers_.solutions.clear();
+    gpu_buffers_.next_solutions.clear();
+    gpu_buffers_.model.clear();
+    gpu_buffers_.residual.clear();
+    gpu_buffers_.numerator.reset();
+    gpu_buffers_.denominator.reset();
+    
+    throw std::runtime_error(std::string("GPU buffer allocation failed: ") + e.what());
+  }
 }
 
 template <typename VisMatrix>
 void IterativeDiagonalSolverCuda<VisMatrix>::AllocateHostBuffers(
     const SolveData<VisMatrix>& data) {
+  // Calculate required size for next_solutions buffer - all dimensions
+  size_t total_elements = NChannelBlocks() * NAntennas() * 
+                         NSubSolutions() * NSolutionPolarizations();
+  
+  // Add safety checks for multiplication overflow
+  if (total_elements == 0) {
+    throw std::runtime_error("Total elements calculation resulted in 0");
+  }
+  
+  if (total_elements > (std::numeric_limits<size_t>::max() / sizeof(std::complex<double>))) {
+    throw std::runtime_error("Buffer size calculation would overflow");
+  }
+  
+  size_t required_size = total_elements * sizeof(std::complex<double>);
+  std::cout << "DEBUG: Allocating next_solutions buffer with size: " 
+            << required_size << " bytes for " << total_elements << " elements" << std::endl;
+            
   host_buffers_.next_solutions =
-      std::make_unique<cu::HostMemory>(SizeOfNextSolutions(NVisibilities()));
+      std::make_unique<cu::HostMemory>(required_size);
+      
+  if (!host_buffers_.next_solutions || !*host_buffers_.next_solutions) {
+    throw std::runtime_error("Failed to allocate host next_solutions buffer of size " + 
+                           std::to_string(required_size));
+  }
+  
   for (size_t ch_block = 0; ch_block < NChannelBlocks(); ch_block++) {
     const ChannelBlockData<VisMatrix>& channel_block_data =
         data.ChannelBlock(ch_block);
@@ -247,13 +320,34 @@ void IterativeDiagonalSolverCuda<VisMatrix>::AllocateHostBuffers(
 
 template <typename VisMatrix>
 void IterativeDiagonalSolverCuda<VisMatrix>::DeallocateHostBuffers() {
-  host_buffers_.next_solutions.reset();
-  host_buffers_.model.clear();
-  host_buffers_.residual.clear();
-  host_buffers_.solutions.clear();
-  host_buffers_.antenna_pairs.clear();
-  host_buffers_.solution_map.clear();
-  host_buffers_initialized_ = false;
+  try {
+    // Wait for any pending operations to complete before deallocating
+    if (host_to_device_stream_) {
+      host_to_device_stream_->synchronize();
+    }
+    if (device_to_host_stream_) {
+      device_to_host_stream_->synchronize();
+    }
+    if (execute_stream_) {
+      execute_stream_->synchronize();
+    }
+
+    // Clear host buffers
+    if (host_buffers_.next_solutions) {
+      host_buffers_.next_solutions.reset();
+    }
+
+    host_buffers_.model.clear();
+    host_buffers_.residual.clear();
+    host_buffers_.solutions.clear();
+    host_buffers_.antenna_pairs.clear();
+    host_buffers_.solution_map.clear();
+    
+    host_buffers_initialized_ = false;
+  } catch (const std::exception& e) {
+    // Log error but don't throw since this is cleanup code
+    std::cerr << "Error during host buffer deallocation: " << e.what() << std::endl;
+  }
 }
 template <typename VisMatrix>
 void IterativeDiagonalSolverCuda<VisMatrix>::CopyHostToHost(
@@ -284,17 +378,45 @@ template <typename VisMatrix>
 void IterativeDiagonalSolverCuda<VisMatrix>::CopyHostToDevice(
     size_t ch_block, size_t buffer_id, cu::Stream& stream, cu::Event& event,
     const SolveData<VisMatrix>& data) {
+  if (ch_block >= NChannelBlocks()) {
+    throw std::runtime_error("Channel block index out of bounds");
+  }
+  if (buffer_id >= gpu_buffers_.solution_map.size()) {
+    throw std::runtime_error("Buffer ID out of bounds");
+  }
+
   const ChannelBlockData<VisMatrix>& channel_block_data =
       data.ChannelBlock(ch_block);
 
   const size_t n_directions = channel_block_data.NDirections();
   const size_t n_visibilities = channel_block_data.NVisibilities();
 
+  if (n_directions == 0 || n_visibilities == 0) {
+    throw std::runtime_error("Invalid dimensions for channel block data");
+  }
+
+  // Validate host buffers have sufficient space
+  if (ch_block >= host_buffers_.solution_map.size() ||
+      ch_block >= host_buffers_.antenna_pairs.size() ||
+      ch_block >= host_buffers_.model.size() ||
+      ch_block >= host_buffers_.residual.size() ||
+      ch_block >= host_buffers_.solutions.size()) {
+    throw std::runtime_error("Host buffer vectors not properly sized for channel block");
+  }
+
   cu::HostMemory& host_solution_map = host_buffers_.solution_map[ch_block];
   cu::HostMemory& host_antenna_pairs = host_buffers_.antenna_pairs[ch_block];
   cu::HostMemory& host_model = host_buffers_.model[ch_block];
   cu::HostMemory& host_residual = host_buffers_.residual[ch_block];
   cu::HostMemory& host_solutions = host_buffers_.solutions[ch_block];
+
+  // Validate source buffers
+  if (!host_solution_map || !host_antenna_pairs || !host_model ||
+      !host_residual || !host_solutions) {
+    throw std::runtime_error("One or more host buffers is null");
+  }
+
+  // Validate destination buffers
   cu::DeviceMemory& device_solution_map = gpu_buffers_.solution_map[buffer_id];
   cu::DeviceMemory& device_antenna_pairs =
       gpu_buffers_.antenna_pairs[buffer_id];
@@ -302,18 +424,49 @@ void IterativeDiagonalSolverCuda<VisMatrix>::CopyHostToDevice(
   cu::DeviceMemory& device_residual = gpu_buffers_.residual[buffer_id];
   cu::DeviceMemory& device_solutions = gpu_buffers_.solutions[buffer_id];
 
-  stream.memcpyHtoDAsync(device_solution_map, host_solution_map,
-                         SizeOfSolutionMap(n_directions, n_visibilities));
-  stream.memcpyHtoDAsync(device_model, host_model,
-                         SizeOfModel<VisMatrix>(n_directions, n_visibilities));
-  stream.memcpyHtoDAsync(device_residual, host_residual,
-                         SizeOfResidual<VisMatrix>(n_visibilities));
-  stream.memcpyHtoDAsync(device_antenna_pairs, host_antenna_pairs,
-                         SizeOfAntennaPairs(n_visibilities));
-  stream.memcpyHtoDAsync(device_solutions, host_solutions,
-                         SizeOfSolutions(n_visibilities));
+  if (!device_solution_map || !device_antenna_pairs || !device_model ||
+      !device_residual || !device_solutions) {
+    throw std::runtime_error("One or more device buffers is null");
+  }
 
-  stream.record(event);
+  try {
+    stream.memcpyHtoDAsync(device_solution_map, host_solution_map,
+                          SizeOfSolutionMap(n_directions, n_visibilities));
+    stream.memcpyHtoDAsync(device_model, host_model,
+                          SizeOfModel<VisMatrix>(n_directions, n_visibilities));
+    stream.memcpyHtoDAsync(device_residual, host_residual,
+                          SizeOfResidual<VisMatrix>(n_visibilities));
+    stream.memcpyHtoDAsync(device_antenna_pairs, host_antenna_pairs,
+                          SizeOfAntennaPairs(n_visibilities));
+    stream.memcpyHtoDAsync(device_solutions, host_solutions,
+                          SizeOfSolutions(n_visibilities));
+  } catch (const std::exception& e) {
+    throw std::runtime_error(std::string("CUDA memory copy failed: ") + e.what());
+  }
+
+  // Ensure previous operations in this stream are complete
+  try {
+    stream.synchronize();
+  } catch (const std::exception& e) {
+    throw std::runtime_error(std::string("Stream synchronization failed: ") + e.what());
+  }
+
+  // Record the event to signal completion
+  try {
+    event.record(stream);
+  } catch (const std::exception& e) {
+    throw std::runtime_error(std::string("Event recording failed: ") + e.what());
+  }
+
+  // Verify the event was recorded
+  try {
+    cudaError_t status = cudaEventQuery(event);
+    if (status != cudaSuccess && status != cudaErrorNotReady) {
+      throw std::runtime_error("Event recording verification failed");
+    }
+  } catch (const std::exception& e) {
+    throw std::runtime_error(std::string("Event query failed: ") + e.what());
+  }
 }
 template <typename VisMatrix>
 void IterativeDiagonalSolverCuda<VisMatrix>::PostProcessing(
@@ -344,8 +497,14 @@ SolverBase::SolveResult IterativeDiagonalSolverCuda<VisMatrix>::Solve(
     const SolveData<VisMatrix>& data,
     std::vector<std::vector<DComplex>>& solutions, double time,
     std::ostream* stat_stream) {
-  PrepareConstraints();
-  context_->setCurrent();
+  try {
+    PrepareConstraints();
+    context_->setCurrent();
+    
+    // Validate CUDA context and device
+    if (!device_ || !context_) {
+      throw std::runtime_error("CUDA device or context not initialized");
+    }
 
   const bool phase_only = GetPhaseOnly();
   const double step_size = GetStepSize();
@@ -357,143 +516,241 @@ SolverBase::SolveResult IterativeDiagonalSolverCuda<VisMatrix>::Solve(
    */
   if (!host_buffers_initialized_) {
     AllocateHostBuffers(data);
+    if (!host_buffers_.next_solutions) {
+      throw std::runtime_error("Failed to allocate host next_solutions buffer");
+    }
     host_buffers_initialized_ = true;
   }
+  
   if (!gpu_buffers_initialized_) {
     AllocateGPUBuffers(data);
+    if (!gpu_buffers_.numerator || !gpu_buffers_.denominator) {
+      throw std::runtime_error("Failed to allocate GPU numerator/denominator buffers");
+    }
     gpu_buffers_initialized_ = true;
+  }
+
+  // Validate essential buffers are allocated
+  if (host_buffers_.model.empty() || host_buffers_.residual.empty() || 
+      host_buffers_.solutions.empty() || host_buffers_.antenna_pairs.empty()) {
+    throw std::runtime_error("Host buffer vectors not properly allocated");
+  }
+
+  if (gpu_buffers_.antenna_pairs.empty() || gpu_buffers_.solution_map.empty() ||
+      gpu_buffers_.solutions.empty() || gpu_buffers_.next_solutions.empty() ||
+      gpu_buffers_.model.empty() || gpu_buffers_.residual.empty()) {
+    throw std::runtime_error("GPU buffer vectors not properly allocated");
   }
 
   const std::array<size_t, 4> next_solutions_shape = {
       NChannelBlocks(), NAntennas(), NSubSolutions(), NSolutionPolarizations()};
-  std::complex<double>* next_solutions_ptr = *(host_buffers_.next_solutions);
-  SolutionSpan next_solutions =
-      aocommon::xt::CreateSpan(next_solutions_ptr, next_solutions_shape);
+      
+  // Validate solution shape dimensions
+  if (next_solutions_shape[0] == 0 || next_solutions_shape[1] == 0 ||
+      next_solutions_shape[2] == 0 || next_solutions_shape[3] == 0) {
+    throw std::runtime_error("Invalid solution shape dimensions");
+  }
 
+  // Validate next_solutions pointer and create span
+  std::complex<double>* next_solutions_ptr = *(host_buffers_.next_solutions);
+  if (!next_solutions_ptr) {
+    throw std::runtime_error("next_solutions_ptr is null");
+  }
+
+  // Validate pointer alignment for complex<double>
+  if (reinterpret_cast<std::uintptr_t>(next_solutions_ptr) % 
+      alignof(std::complex<double>) != 0) {
+    throw std::runtime_error("next_solutions_ptr is not properly aligned");
+  }
+
+  // Calculate total size needed for the solution span
+  size_t total_elements = 1;
+  for (size_t dim : next_solutions_shape) {
+    // Check for overflow
+    if (dim > std::numeric_limits<size_t>::max() / total_elements) {
+      throw std::runtime_error("Solution span size calculation would overflow");
+    }
+    total_elements *= dim;
+  }
+
+  // Verify calculated size matches allocated buffer size
+  size_t buffer_size = SizeOfNextSolutions(NVisibilities());
+  size_t required_size = total_elements * sizeof(std::complex<double>);
+  if (buffer_size < required_size) {
+    throw std::runtime_error("Buffer size mismatch: allocated " + 
+                           std::to_string(buffer_size) + " bytes, need " + 
+                           std::to_string(required_size) + " bytes");
+  }
+
+  // Define buffer type before use
+  using buffer_type = xt::xbuffer_adaptor<std::complex<double>*, xt::no_ownership>;
+  buffer_type buffer(next_solutions_ptr, total_elements);
+  
+  // Create span with RAII and proper validation
+  SolutionSpan next_solutions(buffer, next_solutions_shape);
+  
+  // Validate the created span
+  if (!next_solutions.data()) {
+    throw std::runtime_error("Solution span data pointer is null");
+  }
+  
+  size_t span_total_elements = std::accumulate(
+      next_solutions.shape().begin(),
+      next_solutions.shape().end(),
+      size_t(1),
+      std::multiplies<size_t>());
+      
+  if (span_total_elements != total_elements) {
+    std::ostringstream oss;
+    oss << "Solution span size mismatch: got " << span_total_elements
+        << " elements, expected " << total_elements;
+    throw std::runtime_error(oss.str());
+  }
+  
+  // Verify shape dimensions
+  auto shape = next_solutions.shape();
+  if (shape[0] != NChannelBlocks() || shape[1] != NAntennas() ||
+      shape[2] != NSubSolutions() || shape[3] != NSolutionPolarizations()) {
+    std::ostringstream oss;
+    oss << "Solution span shape mismatch: expected ["
+        << NChannelBlocks() << "," << NAntennas() << ","
+        << NSubSolutions() << "," << NSolutionPolarizations() << "]"
+        << " but got [" << shape[0] << "," << shape[1] << ","
+        << shape[2] << "," << shape[3] << "]";
+    throw std::runtime_error(oss.str());
+  }
+
+  // Continue with validated solution span
   /*
    * Allocate events for each channel block
    */
-  std::vector<cu::Event> input_copied_events(NChannelBlocks());
-  std::vector<cu::Event> compute_finished_events(NChannelBlocks());
-  std::vector<cu::Event> output_copied_events(NChannelBlocks());
+    std::vector<cu::Event> input_copied_events(NChannelBlocks());
+    std::vector<cu::Event> compute_finished_events(NChannelBlocks());
+    std::vector<cu::Event> output_copied_events(NChannelBlocks());
 
-  /*
-   * Start iterating
-   */
-  size_t iteration = 0;
-  bool has_converged = false;
-  bool has_previously_converged = false;
-  bool constraints_satisfied = false;
-  bool done = false;
+    /*
+     * Start iterating
+     */
+    size_t iteration = 0;
+    bool has_converged = false;
+    bool has_previously_converged = false;
+    bool constraints_satisfied = false;
+    bool done = false;
 
-  std::vector<double> step_magnitudes;
-  step_magnitudes.reserve(GetMaxIterations());
+    std::vector<double> step_magnitudes;
+    step_magnitudes.reserve(GetMaxIterations());
 
-  do {
-    MakeSolutionsFinite2Pol(solutions);
+    do {
+      MakeSolutionsFinite2Pol(solutions);
 
-    nvtxRangeId_t nvts_range_gpu = nvtxRangeStart("GPU");
+      nvtxRangeId_t nvts_range_gpu = nvtxRangeStart("GPU");
 
-    for (size_t ch_block = 0; ch_block < NChannelBlocks(); ch_block++) {
-      const ChannelBlockData<VisMatrix>& channel_block_data =
-          data.ChannelBlock(ch_block);
-      const int buffer_id = ch_block % 2;
-      // Copy input data for first channel block
-      if (ch_block == 0) {
-        CopyHostToHost(ch_block, iteration == 0, data, solutions[ch_block],
-                       *host_to_device_stream_);
+      for (size_t ch_block = 0; ch_block < NChannelBlocks(); ch_block++) {
+        const ChannelBlockData<VisMatrix>& channel_block_data =
+            data.ChannelBlock(ch_block);
+        const int buffer_id = ch_block % 2;
+        // Copy input data for first channel block
+        if (ch_block == 0) {
+          CopyHostToHost(ch_block, iteration == 0, data, solutions[ch_block],
+                         *host_to_device_stream_);
 
-        CopyHostToDevice(ch_block, buffer_id, *host_to_device_stream_,
-                         input_copied_events[0], data);
-      }
-
-      // As soon as input_copied_events[0] is triggered, the input data is
-      // copied to the GPU and the host buffers could theoretically be reused.
-      // However, since the size of these buffers may differ, every channel
-      // block has its own set of host buffers anyway.
-      // Before starting kernel execution for the current channel block (on a
-      // different stream), the copy of data for the next channel block (if any)
-      // is scheduled using a second set of GPU buffers.
-      if (ch_block < NChannelBlocks() - 1) {
-        CopyHostToHost(ch_block + 1, iteration == 0, data,
-                       solutions[ch_block + 1], *host_to_device_stream_);
-
-        // Since the computation of channel block <n> and <n + 2> share the same
-        // set of GPU buffers, wait for the compute_finished event to be
-        // triggered before overwriting their contents.
-        if (ch_block > 1) {
-          host_to_device_stream_->wait(compute_finished_events[ch_block - 2]);
+          CopyHostToDevice(ch_block, buffer_id, *host_to_device_stream_,
+                           input_copied_events[0], data);
         }
 
-        CopyHostToDevice(ch_block + 1, (ch_block + 1) % 2,
-                         *host_to_device_stream_,
-                         input_copied_events[ch_block + 1], data);
-      }
+        // As soon as input_copied_events[0] is triggered, the input data is
+        // copied to the GPU and the host buffers could theoretically be reused.
+        // However, since the size of these buffers may differ, every channel
+        // block has its own set of host buffers anyway.
+        // Before starting kernel execution for the current channel block (on a
+        // different stream), the copy of data for the next channel block (if any)
+        // is scheduled using a second set of GPU buffers.
+        if (ch_block < NChannelBlocks() - 1) {
+          CopyHostToHost(ch_block + 1, iteration == 0, data,
+                         solutions[ch_block + 1], *host_to_device_stream_);
 
-      // Wait for input of the current channel block to be copied
-      execute_stream_->wait(input_copied_events[ch_block]);
+          // Since the computation of channel block <n> and <n + 2> share the same
+          // set of GPU buffers, wait for the compute_finished event to be
+          // triggered before overwriting their contents.
+          if (ch_block > 1) {
+            host_to_device_stream_->wait(compute_finished_events[ch_block - 2]);
+          }
 
-      // Wait for output buffer to be free
-      if (ch_block > 1) {
-        execute_stream_->wait(output_copied_events[ch_block - 2]);
-      }
+          CopyHostToDevice(ch_block + 1, (ch_block + 1) % 2,
+                           *host_to_device_stream_,
+                           input_copied_events[ch_block + 1], data);
+        }
 
-      // Start iteration (dtod copies and kernel execution only)
-      PerformIteration<VisMatrix>(
-          phase_only, step_size, channel_block_data, *execute_stream_,
-          NAntennas(), NSubSolutions(), NDirections(),
-          gpu_buffers_.solution_map[buffer_id],
-          gpu_buffers_.solutions[buffer_id],
-          gpu_buffers_.next_solutions[buffer_id],
-          gpu_buffers_.residual[buffer_id], gpu_buffers_.residual[2],
-          gpu_buffers_.model[buffer_id], gpu_buffers_.antenna_pairs[buffer_id],
-          *gpu_buffers_.numerator, *gpu_buffers_.denominator);
+        // Wait for input of the current channel block to be copied
+        execute_stream_->wait(input_copied_events[ch_block]);
 
-      execute_stream_->record(compute_finished_events[ch_block]);
+        // Wait for output buffer to be free
+        if (ch_block > 1) {
+          execute_stream_->wait(output_copied_events[ch_block - 2]);
+        }
 
-      // Wait for the computation to finish
-      device_to_host_stream_->wait(compute_finished_events[ch_block]);
+        // Start iteration (dtod copies and kernel execution only)
+        PerformIteration<VisMatrix>(
+            phase_only, step_size, channel_block_data, *execute_stream_,
+            NAntennas(), NSubSolutions(), NDirections(),
+            gpu_buffers_.solution_map[buffer_id],
+            gpu_buffers_.solutions[buffer_id],
+            gpu_buffers_.next_solutions[buffer_id],
+            gpu_buffers_.residual[buffer_id], gpu_buffers_.residual[2],
+            gpu_buffers_.model[buffer_id], gpu_buffers_.antenna_pairs[buffer_id],
+            *gpu_buffers_.numerator, *gpu_buffers_.denominator);
 
-      // Copy next solutions back to host
-      const size_t n_visibilities = next_solutions.shape(1) *
-                                    next_solutions.shape(2) *
-                                    next_solutions.shape(3);
-      device_to_host_stream_->memcpyDtoHAsync(
-          &next_solutions(ch_block, 0, 0, 0),
-          gpu_buffers_.next_solutions[buffer_id],
-          SizeOfNextSolutions(n_visibilities));
+        execute_stream_->record(compute_finished_events[ch_block]);
 
-      // Record that the output is copied
-      device_to_host_stream_->record(output_copied_events[ch_block]);
-    }  // end for ch_block
+        // Wait for the computation to finish
+        device_to_host_stream_->wait(compute_finished_events[ch_block]);
 
-    // Wait for next solutions to be copied
-    device_to_host_stream_->synchronize();
+        // Copy next solutions back to host
+        const size_t n_visibilities = next_solutions.shape(1) *
+                                      next_solutions.shape(2) *
+                                      next_solutions.shape(3);
+        device_to_host_stream_->memcpyDtoHAsync(
+            &next_solutions(ch_block, 0, 0, 0),
+            gpu_buffers_.next_solutions[buffer_id],
+            SizeOfNextSolutions(n_visibilities));
 
-    nvtxRangeEnd(nvts_range_gpu);
+        // Record that the output is copied
+        device_to_host_stream_->record(output_copied_events[ch_block]);
+      }  // end for ch_block
 
-    // CPU-only postprocessing
-    nvtxRangeId_t nvtx_range_cpu = nvtxRangeStart("CPU");
-    PostProcessing(iteration, time, has_previously_converged, has_converged,
-                   constraints_satisfied, done, result, solutions,
-                   next_solutions, step_magnitudes, stat_stream);
-    nvtxRangeEnd(nvtx_range_cpu);
-  } while (!done);
+      // Wait for next solutions to be copied
+      device_to_host_stream_->synchronize();
 
-  // When we have not converged yet, we set the nr of iterations to the max+1,
-  // so that non-converged iterations can be distinguished from converged ones.
-  if (has_converged && constraints_satisfied) {
-    result.iterations = iteration;
-  } else {
-    result.iterations = iteration + 1;
+      nvtxRangeEnd(nvts_range_gpu);
+
+      // CPU-only postprocessing
+      nvtxRangeId_t nvtx_range_cpu = nvtxRangeStart("CPU");
+      PostProcessing(iteration, time, has_previously_converged, has_converged,
+                     constraints_satisfied, done, result, solutions,
+                     next_solutions, step_magnitudes, stat_stream);
+      nvtxRangeEnd(nvtx_range_cpu);
+    } while (!done);
+
+    // When we have not converged yet, we set the nr of iterations to the max+1,
+    // so that non-converged iterations can be distinguished from converged ones.
+    if (has_converged && constraints_satisfied) {
+      result.iterations = iteration;
+    } else {
+      result.iterations = iteration + 1;
+    }
+
+    if (!keep_buffers_) DeallocateHostBuffers();
+    return result;
+  } catch (const std::exception& e) {
+    // Clean up partially allocated resources on error
+    DeallocateHostBuffers();
+    throw std::runtime_error(std::string("Error during Solve: ") + e.what());
   }
-
-  if (!keep_buffers_) DeallocateHostBuffers();
-  return result;
 }
 
-template class IterativeDiagonalSolverCuda<aocommon::MC2x2F>;
-template class IterativeDiagonalSolverCuda<aocommon::MC2x2FDiag>;
-
-}  // namespace ddecal
+} // namespace ddecal
 }  // namespace dp3
+
+// Explicit template instantiations
+template class dp3::ddecal::IterativeDiagonalSolverCuda<aocommon::MC2x2F>;
+template class dp3::ddecal::IterativeDiagonalSolverCuda<aocommon::MC2x2FDiag>;
