@@ -12,6 +12,15 @@
 
 #define BLOCK_SIZE 128
 
+#define cudaCheckError() {                                      \
+ cudaError_t e=cudaGetLastError();                                 \
+ printf("testing cudaCheckError %s:%d\n",__FILE__,__LINE__); \
+ if(e!=cudaSuccess) {                                              \
+   printf("Cuda failure %s:%d: '%s'\n",__FILE__,__LINE__,cudaGetErrorString(e));           \
+   exit(0); \
+ }                                                                 \
+}
+
 template <bool Add>
 __device__ void AddOrSubtract(size_t vis_index, size_t n_solutions,
                               const unsigned int* antenna_pairs,
@@ -289,4 +298,5 @@ void LaunchStepKernel(cudaStream_t stream, size_t n_visibilities,
   StepKernel<<<grid_dim, block_dim, 0, stream>>>(
       n_visibilities, Cast<const cuDoubleComplex>(solutions),
       Cast<cuDoubleComplex>(next_solutions), phase_only, step_size);
+  cudaCheckError();
 }
