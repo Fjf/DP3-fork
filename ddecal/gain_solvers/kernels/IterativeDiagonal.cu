@@ -14,7 +14,6 @@
 
 #define cudaCheckError() {                                      \
  cudaError_t e=cudaGetLastError();                                 \
- printf("testing cudaCheckError %s:%d\n",__FILE__,__LINE__); \
  if(e!=cudaSuccess) {                                              \
    printf("Cuda failure %s:%d: '%s'\n",__FILE__,__LINE__,cudaGetErrorString(e));           \
    exit(0); \

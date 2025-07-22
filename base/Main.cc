@@ -18,6 +18,7 @@ int main(int argc, char* argv[]) {
     dp3::base::ExecuteFromCommandLine(argc, argv);
     return 0;
   } catch (const std::exception& err) {
+    throw;
     aocommon::Logger::Error << "\nstd exception detected: " << err.what()
                             << '\n';
     return 1;

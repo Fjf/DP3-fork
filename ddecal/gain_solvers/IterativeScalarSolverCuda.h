@@ -120,9 +120,9 @@ class IterativeScalarSolverCuda final : public SolverBase {
    * cuda-host-memory-to-gpu copy is faster than a direct host-to-gpu copy.
    */
   struct HostBuffers {
-    // <n_channelblocks>[n_directions][n_visibilities], MC2x2F
+    // <n_channelblocks>[n_directions][n_visibilities], DFloat
     std::vector<cu::HostMemory> model;
-    // <n_channelblocks>[n_visibilities], MC2x2F
+    // <n_channelblocks>[n_visibilities], DFloat
     std::vector<cu::HostMemory> residual;
     // <n_channelblocks>[n_visibilities], DComplex
     std::vector<cu::HostMemory> solutions;

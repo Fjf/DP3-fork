@@ -357,8 +357,10 @@ void IterativeDiagonalSolverCuda<VisMatrix>::CopyHostToHost(
       data.ChannelBlock(ch_block);
   const size_t n_directions = channel_block_data.NDirections();
   const size_t n_visibilities = channel_block_data.NVisibilities();
+
   cu::HostMemory& host_model = host_buffers_.model[ch_block];
   cu::HostMemory& host_solutions = host_buffers_.solutions[ch_block];
+
   stream.memcpyHtoHAsync(host_model, &channel_block_data.ModelVisibility(0, 0),
                          SizeOfModel<VisMatrix>(n_directions, n_visibilities));
   stream.memcpyHtoHAsync(host_solutions, solutions.data(),

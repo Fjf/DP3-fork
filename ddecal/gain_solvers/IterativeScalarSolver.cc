@@ -250,7 +250,7 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
   // Fill v_residual
   std::copy(cb_data.DataBegin(), cb_data.DataEnd(), v_residual.begin());
 
-  PrintVectorSummary(v_residual, "residual_pre_kernel");
+  // PrintVectorSummary(v_residual, "residual_pre_kernel");
 
   // Subtract all directions with their current solutions
   for (size_t direction = 0; direction != NDirections(); ++direction)
@@ -258,7 +258,7 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
 
 
 
-  PrintVectorSummary(v_residual, "v_residual_post_kernel");
+  // PrintVectorSummary(v_residual, "v_residual_post_kernel");
 
 
   const std::vector<VisMatrix> v_copy = v_residual;
@@ -310,11 +310,11 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
       }
     }
     
-    PrintVectorSummary(v_residual, "v_residual_post_kernel_2");
-    PrintVectorSummary(solutions, "solutions_post_solve_direction");
+    // PrintVectorSummary(v_residual, "v_residual_post_kernel_2");
+    // PrintVectorSummary(solutions, "solutions_post_solve_direction");
     
     // Analyze next_solutions after solving direction
-    PrintSolutionTensorSummary(next_solutions, "next_solutions_post_solve_direction", ch_block);
+    // PrintSolutionTensorSummary(next_solutions, "next_solutions_post_solve_direction", ch_block);
     
     // Add count of non-zero model values
     size_t total_model_values = 0;
@@ -468,14 +468,14 @@ void IterativeScalarSolver<VisMatrix>::AddOrSubtractDirection(
               cb_data.ModelVisibility(direction, vis_index);
           const VisMatrix corrected_model =
               model * solution_1 * solution_2_conj;
-          std::cout << "DEBUG AddOrSubtract: vis_index: " << vis_index 
-                    // << " antenna_1: " << antenna_1 
-                    // << " antenna_2: " << antenna_2 
-                    // << " solution_index: " << solution_index 
-                    // << " solution_1: " << solution_1 
-                    // << " solution_2_conj: " << solution_2_conj 
-                    // << " model: " << model 
-                    << " corrected_model: " << corrected_model << " data" << data << std::endl;
+          // std::cout << "DEBUG AddOrSubtract: vis_index: " << vis_index
+          //           // << " antenna_1: " << antenna_1
+          //           // << " antenna_2: " << antenna_2
+          //           // << " solution_index: " << solution_index
+          //           // << " solution_1: " << solution_1
+          //           // << " solution_2_conj: " << solution_2_conj
+          //           // << " model: " << model
+          //           << " corrected_model: " << corrected_model << " data" << data << std::endl;
           if (Add) {
             data += corrected_model;
           } else {
