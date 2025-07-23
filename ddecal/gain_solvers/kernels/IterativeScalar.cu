@@ -18,7 +18,10 @@
  if(e!=cudaSuccess) {                                              \
    printf("Cuda failure %s:%d: '%s'\n",__FILE__,__LINE__,cudaGetErrorString(e));           \
    exit(0); \
- }                                                                 \
+ } \
+ else {                                                         \
+   printf("Cuda success %s:%d: '%s'\n",__FILE__,__LINE__,cudaGetErrorString(e));           \
+} \
 }
 
 template <bool Add>
@@ -48,9 +51,46 @@ __device__ void AddOrSubtractScalar(size_t vis_index, size_t n_solutions,
   const cuFloatComplex contribution = cuCmulf(cuCmulf(model[vis_index], solution_1_val), solution_2_conj);
   
   // Debug: Add bounds checking and error detection
-  printf("DEBUG GPU kernel vis_index=%lu, antenna_1=%u, antenna_2=%u, sol_idx=%lu, model=(%f,%f), contrib=(%f,%f)\n",
-          (unsigned long)vis_index, antenna_1, antenna_2, (unsigned long)solution_index,
-          model[vis_index].x, model[vis_index].y, contribution.x, contribution.y);
+  // printf("DEBUG GPU kernel vis_index=%lu, antenna_1=%u, antenna_2=%u, sol_idx=%lu, model=(%f,%f), contrib=(%f,%f)\n",
+  //         (unsigned long)vis_index, antenna_1, antenna_2, (unsigned long)solution_index,
+  //         model[vis_index].x, model[vis_index].y, contribution.x, contribution.y);
+  if (Add) {
+    residual_out[vis_index] = cuCaddf(residual_in[vis_index], contribution);
+  } else {
+    residual_out[vis_index] = cuCsubf(residual_in[vis_index], contribution);
+  }
+}
+
+template <bool Add>
+__device__ void AddOrSubtractScalar2(size_t vis_index, size_t n_solutions,
+                              const unsigned int* antenna_pairs,
+                              const unsigned int* solution_map,
+                              const cuDoubleComplex* solutions,
+                              const cuFloatComplex* model,
+                              const cuFloatComplex* residual_in,
+                              cuFloatComplex* residual_out) {
+  const uint32_t antenna_1 = antenna_pairs[vis_index * 2 + 0];
+  const uint32_t antenna_2 = antenna_pairs[vis_index * 2 + 1];
+  const size_t solution_index = solution_map[vis_index];
+  const cuDoubleComplex solution_1 =
+      solutions[antenna_1 * n_solutions + solution_index];
+  const cuDoubleComplex solution_2 =
+      solutions[antenna_2 * n_solutions + solution_index];
+
+  const cuFloatComplex solution_1_val = cuComplexDoubleToFloat(solution_1);
+  const cuFloatComplex solution_2_conj =
+      cuComplexDoubleToFloat(cuConj(solution_2));
+
+  // printf("DEBUG GPU kernel vis_index=%lu,residual_in=[{%.6f,%.6f}]\n",
+  //        (unsigned long)vis_index,
+  //        residual_out[vis_index].x, residual_out[vis_index].y);
+
+  const cuFloatComplex contribution = cuCmulf(cuCmulf(model[vis_index], solution_1_val), solution_2_conj);
+  
+  // Debug: Add bounds checking and error detection
+  // printf("DEBUG GPU kernel vis_index=%lu, antenna_1=%u, antenna_2=%u, sol_idx=%lu, model=(%f,%f), contrib=(%f,%f)\n",
+  //         (unsigned long)vis_index, antenna_1, antenna_2, (unsigned long)solution_index,
+  //         model[vis_index].x, model[vis_index].y, contribution.x, contribution.y);
   if (Add) {
     residual_out[vis_index] = cuCaddf(residual_in[vis_index], contribution);
   } else {
@@ -151,10 +191,14 @@ __device__ void SolveScalarDirection(size_t vis_index, size_t n_visibilities,
 
     const size_t full_solution_index =
         antenna * n_direction_solutions + rel_solution_index;
+    // printf("DEBUG GPU kernel vis_index=%lu, antenna=%lu, full_solution_index=%lu, rel_solution_index=%lu, solution_index=%lu, n_direction_solutions=%lu, solution_map=%lu, result={%.6f,%.6f}, changed_model={%.6f,%.6f}\n",
+    //        (unsigned long)vis_index, (unsigned long)antenna,
+    //        (unsigned long)full_solution_index, (unsigned long)rel_solution_index, (unsigned long)solution_index, (unsigned long)n_direction_solutions,
+    //        (unsigned int)solution_map, result.x, result.y, changed_model.x, changed_model.y);
 
     // Atomic reduction into global memory - for scalar solver, we only need one value
-    atomicAdd(&numerator[full_solution_index * 2 + 0].x, result.x);
-    atomicAdd(&numerator[full_solution_index * 2 + 0].y, result.y);
+    atomicAdd(&numerator[full_solution_index * 2].x, result.x);
+    atomicAdd(&numerator[full_solution_index * 2].y, result.y);
     
     atomicAdd(&denominator[full_solution_index * 2],
               cuCabsf(changed_model) * cuCabsf(changed_model));
@@ -239,6 +283,32 @@ __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
         residual, residual);  // in-place
   }
 }
+
+__global__ void SubtractScalarKernel2(size_t n_directions, size_t n_visibilities,
+                               size_t n_solutions,
+                               const unsigned int* antenna_pairs,
+                               const unsigned int* solution_map,
+                               const cuDoubleComplex* solutions,
+                               const cuFloatComplex* model,
+                               cuFloatComplex* residual) {
+  const size_t vis_index = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (vis_index >= n_visibilities) {
+    return;
+  }
+
+  for (size_t direction = 0; direction < n_directions; direction++) {
+    const size_t direction_offset = direction * n_visibilities;
+    const unsigned int* solution_map_direction =
+        solution_map + direction_offset;
+    const cuFloatComplex* model_direction = model + direction_offset;
+    AddOrSubtractScalar2<false>(
+        vis_index, n_solutions, antenna_pairs, solution_map_direction,
+        solutions, model_direction,
+        residual, residual);  // in-place
+  }
+}
+
 // TODO: Error is here, fix please
 void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
                           size_t n_visibilities, size_t n_solutions,
@@ -256,6 +326,33 @@ void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
   cudaCheckError();
   
   SubtractScalarKernel<<<grid_dim, block_dim, 0, stream>>>(
+      n_directions, n_visibilities, n_solutions,
+      Cast<const unsigned int>(antenna_pairs),
+      Cast<const unsigned int>(solution_map),
+      Cast<const cuDoubleComplex>(solutions), Cast<const cuFloatComplex>(model),
+      Cast<cuFloatComplex>(residual));
+  
+  printf("DEBUG LaunchScalarSubtractKernel: After kernel launch\n");
+  cudaCheckError();
+  printf("DEBUG LaunchScalarSubtractKernel: After cudaCheckError\n");
+}
+
+void LaunchScalarSubtractKernel2(cudaStream_t stream, size_t n_directions,
+                          size_t n_visibilities, size_t n_solutions,
+                          cu::DeviceMemory& antenna_pairs,
+                          cu::DeviceMemory& solution_map,
+                          cu::DeviceMemory& solutions, cu::DeviceMemory& model,
+                          cu::DeviceMemory& residual) {
+  const size_t block_dim = BLOCK_SIZE;
+  const size_t grid_dim = (n_visibilities + block_dim) / block_dim;
+  
+  printf("DEBUG LaunchScalarSubtractKernel: n_directions=%zu, n_visibilities=%zu, n_solutions=%zu\n",
+         n_directions, n_visibilities, n_solutions);
+  printf("DEBUG LaunchScalarSubtractKernel: block_dim=%zu, grid_dim=%zu\n", block_dim, grid_dim);
+  
+  cudaCheckError();
+  
+  SubtractScalarKernel2<<<grid_dim, block_dim, 0, stream>>>(
       n_directions, n_visibilities, n_solutions,
       Cast<const unsigned int>(antenna_pairs),
       Cast<const unsigned int>(solution_map),

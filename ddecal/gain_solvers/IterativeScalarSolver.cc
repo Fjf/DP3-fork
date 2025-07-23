@@ -256,6 +256,10 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
   for (size_t direction = 0; direction != NDirections(); ++direction)
     AddOrSubtractDirection<false>(cb_data, v_residual, direction, solutions);
 
+  if (ch_block == 1) {
+    exit(0);
+  }
+
 
 
   PrintVectorSummary(v_residual, "v_residual_post_kernel");
@@ -328,8 +332,7 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
     }
     std::cout << "Count non-zero model values: " << non_zero_model_values 
               << " out of " << total_model_values << " total" << std::endl;
-    
-    if (direction == 0) exit(0);  // Exit after first direction only
+     // Exit after first direction only
 
   }
 }
@@ -468,14 +471,14 @@ void IterativeScalarSolver<VisMatrix>::AddOrSubtractDirection(
               cb_data.ModelVisibility(direction, vis_index);
           const VisMatrix corrected_model =
               model * solution_1 * solution_2_conj;
-          std::cout << "DEBUG AddOrSubtract: vis_index: " << vis_index 
+          // std::cout << "DEBUG AddOrSubtract: vis_index: " << vis_index 
                     // << " antenna_1: " << antenna_1 
                     // << " antenna_2: " << antenna_2 
                     // << " solution_index: " << solution_index 
                     // << " solution_1: " << solution_1 
                     // << " solution_2_conj: " << solution_2_conj 
                     // << " model: " << model 
-                    << " corrected_model: " << corrected_model << " data" << data << std::endl;
+                    // << " corrected_model: " << corrected_model << " data" << data << std::endl;
           if (Add) {
             data += corrected_model;
           } else {

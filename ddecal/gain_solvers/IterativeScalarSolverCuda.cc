@@ -161,40 +161,11 @@ void PrintSolutionTensorSummary(const xt::xtensor<std::complex<double>, 4>& next
 
 template <typename VisMatrix>
 size_t SizeOfModel(size_t n_directions, size_t n_visibilities) {
-  if constexpr (std::is_same_v<VisMatrix, std::complex<float>>) {
-    return n_directions * n_visibilities * sizeof(std::complex<float>);
-  } else if constexpr (std::is_same_v<VisMatrix, std::complex<double>>) {
-    return n_directions * n_visibilities * sizeof(std::complex<double>);
-  } else if constexpr (std::is_same_v<VisMatrix, aocommon::MC2x2F>) {
-    return n_directions * n_visibilities * sizeof(aocommon::MC2x2F);
-  } else if constexpr (std::is_same_v<VisMatrix, aocommon::MC2x2FDiag>) {
-    return n_directions * n_visibilities * sizeof(aocommon::MC2x2FDiag);
-  } else {
-    // For other matrix types, the CUDA kernels expect cuM2x2FloatComplex
-    return n_directions * n_visibilities * sizeof(aocommon::MC2x2F);
-  }
+
+  return n_directions * n_visibilities * sizeof(std::complex<float>);
+  
 }
 
-// template <typename VisMatrix>
-// size_t SizeOfResidual(size_t n_visibilities) {
-//   if constexpr (std::is_same_v<VisMatrix, std::complex<float>>) {
-//     std::cout << "SizeOfResidual: using std::complex<float>" << std::endl;
-//     return n_visibilities * sizeof(std::complex<float>);
-//   } else if constexpr (std::is_same_v<VisMatrix, std::complex<double>>) {
-//     std::cout << "SizeOfResidual: using std::complex<double>" << std::endl;
-//     return n_visibilities * sizeof(std::complex<double>);
-//   } else if constexpr (std::is_same_v<VisMatrix, aocommon::MC2x2F>) {
-//     std::cout << "SizeOfResidual: using aocommon::MC2x2F" << std::endl;
-//     return n_visibilities * sizeof(aocommon::MC2x2F);
-//   } else if constexpr (std::is_same_v<VisMatrix, aocommon::MC2x2FDiag>) {
-//     std::cout << "SizeOfResidual: using aocommon::MC2x2FDiag" << std::endl;
-//     return n_visibilities * sizeof(aocommon::MC2x2FDiag);
-//   } else {
-//     std::cout << "SizeOfResidual: using aocommon::MC2x2F" << std::endl;
-//     // For other matrix types, the CUDA kernels expect cuM2x2FloatComplex
-//     return n_visibilities * sizeof(aocommon::MC2x2F);
-//   }
-// }
 
 template <typename VisMatrix>
 size_t SizeOfResidual(size_t n_visibilities) {
@@ -286,7 +257,7 @@ void PerformIteration(
     cu::DeviceMemory& device_next_solutions, cu::DeviceMemory& device_residual,
     cu::DeviceMemory& device_residual_temp, cu::DeviceMemory& device_model,
     cu::DeviceMemory& device_antenna_pairs, cu::DeviceMemory& device_numerator,
-    cu::DeviceMemory& device_denominator) {
+    cu::DeviceMemory& device_denominator, size_t ch_block) {
   const size_t n_visibilities = channel_block_data.NVisibilities();
 
   // Copy visibility data to residual buffer first
@@ -305,23 +276,192 @@ void PerformIteration(
   
   // Subtract all directions with their current solutions
   // In-place: residual -> residual
+  
+  // Test buffer validity BEFORE the kernel
+  std::cout << "DEBUG: Testing device_residual BEFORE SubtractKernel..." << std::endl;
+  std::vector<std::complex<float>> pre_kernel_test(1);
+  cudaError_t pre_kernel_error = cudaMemcpy(pre_kernel_test.data(), static_cast<void*>(device_residual), 
+                                           sizeof(std::complex<float>), cudaMemcpyDeviceToHost);
+  if (pre_kernel_error != cudaSuccess) {
+    std::cout << "ERROR: device_residual ALREADY corrupted BEFORE kernel: " << cudaGetErrorString(pre_kernel_error) << std::endl;
+    return; // Exit early
+  } else {
+    std::cout << "DEBUG: device_residual is valid before kernel, first element: " << pre_kernel_test[0] << std::endl;
+  }
+  
+  // Check CUDA error state before kernel launch
+  cudaError_t pre_kernel_state = cudaGetLastError();
+  if (pre_kernel_state != cudaSuccess) {
+    std::cout << "ERROR: CUDA error state before kernel launch: " << cudaGetErrorString(pre_kernel_state) << std::endl;
+  }
+  
+  std::cout << "DEBUG: About to launch SubtractKernel with parameters:" << std::endl;
+  std::cout << "  n_directions: " << n_directions << std::endl;
+  std::cout << "  n_visibilities: " << n_visibilities << std::endl;
+  std::cout << "  n_solutions: " << n_solutions << std::endl;
+  std::cout << "  device_residual ptr: " << static_cast<void*>(device_residual) << std::endl;
+  std::cout << "  device_residual size: " << device_residual.size() << " bytes" << std::endl;
+  std::cout << "  expected residual size: " << SizeOfResidual<VisMatrix>(n_visibilities) << " bytes" << std::endl;
+  
+
   LaunchScalarSubtractKernel(stream, n_directions, n_visibilities, n_solutions,
-                       device_antenna_pairs, device_solution_map,
-                       device_solutions, device_model, device_residual);
+                            device_antenna_pairs, device_solution_map,
+                            device_solutions, device_model, device_residual);
+  
+  
+  // Check for kernel launch errors
+  cudaError_t kernel_launch_error = cudaGetLastError();
+  if (kernel_launch_error != cudaSuccess) {
+    std::cout << "ERROR: Kernel launch failed: " << cudaGetErrorString(kernel_launch_error) << std::endl;
+    return;
+  } else {
+    std::cout << "DEBUG: Kernel launched successfully" << std::endl;
+  }
+  
+  // Synchronize to wait for kernel completion
+  std::cout << "DEBUG: Synchronizing stream after kernel launch..." << std::endl;
+  stream.synchronize();
+  
+  // Check for kernel execution errors
+  cudaError_t kernel_exec_error = cudaGetLastError();
+  if (kernel_exec_error != cudaSuccess) {
+    std::cout << "ERROR: Kernel execution failed: " << cudaGetErrorString(kernel_exec_error) << std::endl;
+    return;
+  } else {
+    std::cout << "DEBUG: Kernel executed successfully" << std::endl;
+  }
+  
+  // Test buffer validity AFTER the kernel
+  std::cout << "DEBUG: Testing device_residual AFTER SubtractKernel..." << std::endl;
+  std::vector<std::complex<float>> post_kernel_test(1);
+  cudaError_t post_kernel_error = cudaMemcpy(post_kernel_test.data(), static_cast<void*>(device_residual), 
+                                            sizeof(std::complex<float>), cudaMemcpyDeviceToHost);
+  if (post_kernel_error != cudaSuccess) {
+    std::cout << "ERROR: device_residual corrupted BY the kernel: " << cudaGetErrorString(post_kernel_error) << std::endl;
+    std::cout << "  This proves the corruption happens IN the SubtractKernel!" << std::endl;
+    return; // Exit early
+  } else {
+    std::cout << "DEBUG: device_residual is still valid after kernel, first element: " << post_kernel_test[0] << std::endl;
+  }
+
+  std::cout << "After subtraction, residual size: " 
+            << residual_data.size() << std::endl;
+
+  // if (ch_block == 1) {
+  //   exit(0);
+  // }
+
 
   // Copy result back from GPU and print for debugging
+  std::cout << "DEBUG: About to perform FIRST memcpy from device_residual to host" << std::endl;
+  std::cout << "  Template type VisMatrix: " << typeid(VisMatrix).name() << std::endl;
+  std::cout << "  residual_data.size(): " << residual_data.size() << std::endl;
+  std::cout << "  sizeof(VisMatrix): " << sizeof(VisMatrix) << std::endl;
+  std::cout << "  residual_data buffer size in bytes: " << (residual_data.size() * sizeof(VisMatrix)) << std::endl;
+  std::cout << "  SizeOfResidual<VisMatrix>(n_visibilities): " << SizeOfResidual<VisMatrix>(n_visibilities) << std::endl;
+  std::cout << "  n_visibilities: " << n_visibilities << std::endl;
+  std::cout << "  device_residual buffer address: " << std::hex << static_cast<void*>(device_residual) << std::dec << std::endl;
+  std::cout << "  residual_data.data() address: " << std::hex << static_cast<void*>(residual_data.data()) << std::dec << std::endl;
+  std::cout << "  device_residual.size(): " << device_residual.size() << " bytes" << std::endl;
+  
+  // Check if buffer sizes match
+  size_t host_buffer_size = residual_data.size() * sizeof(VisMatrix);
+  size_t device_copy_size = SizeOfResidual<VisMatrix>(n_visibilities);
+  if (host_buffer_size != device_copy_size) {
+    std::cout << "ERROR: Buffer size mismatch detected!" << std::endl;
+    std::cout << "  Host buffer can hold: " << host_buffer_size << " bytes" << std::endl;
+    std::cout << "  Trying to copy: " << device_copy_size << " bytes" << std::endl;
+    std::cout << "  Ratio: " << (double)device_copy_size / host_buffer_size << std::endl;
+  } else {
+    std::cout << "  Buffer sizes match - proceeding with copy" << std::endl;
+  }
+  
+  // Perform the potentially problematic copy
+  std::cout << "DEBUG: Starting memcpy..." << std::endl;
+  
+  // Check CUDA error state before memcpy
+  cudaError_t pre_error = cudaGetLastError();
+  if (pre_error != cudaSuccess) {
+    std::cout << "ERROR: CUDA error before memcpy: " << cudaGetErrorString(pre_error) << std::endl;
+  }
+  
+  // Additional device buffer validation
+  std::cout << "DEBUG: Validating device buffer before memcpy..." << std::endl;
+  std::cout << "  device_residual pointer value: " << static_cast<void*>(device_residual) << std::endl;
+  std::cout << "  device_residual allocated size: " << device_residual.size() << " bytes" << std::endl;
+  
+  // Try a small test copy first to validate the buffer
+  std::cout << "DEBUG: Testing small copy first..." << std::endl;
+  std::vector<std::complex<float>> test_buffer(1);
+  cudaError_t test_error = cudaMemcpy(test_buffer.data(), static_cast<void*>(device_residual), 
+                                      sizeof(std::complex<float>), cudaMemcpyDeviceToHost);
+  if (test_error != cudaSuccess) {
+    std::cout << "ERROR: Test copy failed: " << cudaGetErrorString(test_error) << std::endl;
+    std::cout << "  This confirms the device_residual buffer is corrupted or invalid!" << std::endl;
+    return; // Exit early to avoid the crash
+  } else {
+    std::cout << "DEBUG: Test copy succeeded, first element: " << test_buffer[0] << std::endl;
+  }
+  
+  std::cout << "DEBUG: Proceeding with full async memcpy..." << std::endl;
   stream.memcpyDtoHAsync(residual_data.data(), device_residual,
                          SizeOfResidual<VisMatrix>(n_visibilities));
+  
+  // Check CUDA error state immediately after memcpy launch
+  cudaError_t post_error = cudaGetLastError();
+  if (post_error != cudaSuccess) {
+    std::cout << "ERROR: CUDA error immediately after memcpy launch: " << cudaGetErrorString(post_error) << std::endl;
+  } else {
+    std::cout << "DEBUG: memcpy launch completed successfully (async)" << std::endl;
+  }
+  
+  std::cout << "DEBUG: memcpy call completed (async)" << std::endl;
+
+  std::cout << "After copying back, residual size: " 
+            << residual_data.size() << std::endl;
+  std::cout << "DEBUG: About to synchronize stream after first memcpy..." << std::endl;
+  
+  // Add CUDA error checking before synchronization
+  cudaError_t cuda_error = cudaGetLastError();
+  if (cuda_error != cudaSuccess) {
+    std::cout << "ERROR: CUDA error detected before synchronization: " 
+              << cudaGetErrorString(cuda_error) << std::endl;
+  } else {
+    std::cout << "  No CUDA errors detected before synchronization" << std::endl;
+  }
+  
   stream.synchronize();
+  
+  // Check for errors after synchronization
+  cuda_error = cudaGetLastError();
+  if (cuda_error != cudaSuccess) {
+    std::cout << "ERROR: CUDA error detected after synchronization: " 
+              << cudaGetErrorString(cuda_error) << std::endl;
+  } else {
+    std::cout << "  No CUDA errors detected after synchronization" << std::endl;
+  }
+  
+  std::cout << "After synchronization, residual size: " 
+            << residual_data.size() << std::endl;
   PrintVectorSummary(residual_data, "v_residual_post_kernel");
+  std::cout << "After printing, residual size: " 
+            << residual_data.size() << std::endl;
   
 
   // Copy result back from GPU and print for debugging
   stream.memcpyDtoHAsync(residual_data.data(), device_residual,
                          SizeOfResidual<VisMatrix>(n_visibilities));
+  std::cout << "After copying back, residual size: " 
+          << residual_data.size() << std::endl;
   stream.synchronize();
+  std::cout << "After synchronization, residual size: " 
+          << residual_data.size() << std::endl;
   PrintVectorSummary(residual_data, "v_residual_post_kernel");
+  std::cout << "After printing, residual size: " 
+          << residual_data.size() << std::endl;
   // exit(0);
+
+
 
   for (size_t direction = 0; direction != n_directions; direction++) {
     // Be aware that we purposely still use the subtraction with 'old'
@@ -329,6 +469,7 @@ void PerformIteration(
     // this direction back before solving
 
     // Out-of-place: residual -> residual_temp
+    std::cout << "direction: " << direction << std::endl;
 
     SolveDirection<VisMatrix>(
         channel_block_data, stream, n_antennas, n_solutions, direction,
@@ -1101,7 +1242,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
           gpu_buffers_.next_solutions[buffer_id],
           gpu_buffers_.residual[buffer_id], gpu_buffers_.residual[2],
           gpu_buffers_.model[buffer_id], gpu_buffers_.antenna_pairs[buffer_id],
-          *gpu_buffers_.numerator, *gpu_buffers_.denominator);
+          *gpu_buffers_.numerator, *gpu_buffers_.denominator, ch_block);
       // std::cout << "DEBUG: Finished iteration: " << iteration
       //           << " for channel block " << ch_block << " out of:  " << NChannelBlocks() << std::endl;
       execute_stream_->record(compute_finished_events[ch_block]);
