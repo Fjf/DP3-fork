@@ -17,6 +17,76 @@
 using aocommon::MC2x2;
 using aocommon::MC2x2F;
 
+void DumpSolutionsToFile2(const std::vector<std::vector<std::complex<double>>>& solutions, 
+                         const std::string& filename, size_t iteration = 0) {
+  std::ofstream file(filename);
+  if (!file.is_open()) {
+    std::cerr << "ERROR: Could not open file " << filename << " for writing" << std::endl;
+    return;
+  }
+  
+  file << std::scientific << std::setprecision(15);
+  
+  // Write header with metadata
+  file << "# DP3 CUDA Solver Solutions Dump" << std::endl;
+  file << "# Iteration: " << iteration << std::endl;
+  file << "# Number of channel blocks: " << solutions.size() << std::endl;
+  file << "# Format: channel_block antenna_index real_part imaginary_part magnitude phase" << std::endl;
+  file << "# " << std::endl;
+  
+  for (size_t ch_block = 0; ch_block < solutions.size(); ++ch_block) {
+    const auto& ch_solutions = solutions[ch_block];
+    file << "# Channel block " << ch_block << " has " << ch_solutions.size() << " solutions" << std::endl;
+    
+    for (size_t ant_idx = 0; ant_idx < ch_solutions.size(); ++ant_idx) {
+      const auto& solution = ch_solutions[ant_idx];
+      double magnitude = std::abs(solution);
+      double phase = std::arg(solution);
+      
+      file << ch_block << " " 
+           << ant_idx << " " 
+           << solution.real() << " " 
+           << solution.imag() << " " 
+           << magnitude << " " 
+           << phase << std::endl;
+    }
+    file << std::endl; // Blank line between channel blocks
+  }
+  
+  file.close();
+  std::cout << "Solutions dumped to file: " << filename << std::endl;
+  std::cout << "Total channel blocks: " << solutions.size() << std::endl;
+  
+  // Print summary statistics
+  size_t total_solutions = 0;
+  size_t nan_count = 0;
+  size_t inf_count = 0;
+  double max_magnitude = 0.0;
+  double min_magnitude = std::numeric_limits<double>::max();
+  
+  for (const auto& ch_solutions : solutions) {
+    for (const auto& solution : ch_solutions) {
+      total_solutions++;
+      double mag = std::abs(solution);
+      if (std::isnan(mag)) {
+        nan_count++;
+      } else if (std::isinf(mag)) {
+        inf_count++;
+      } else {
+        max_magnitude = std::max(max_magnitude, mag);
+        min_magnitude = std::min(min_magnitude, mag);
+      }
+    }
+  }
+  
+  std::cout << "Solutions summary:" << std::endl;
+  std::cout << "  Total solutions: " << total_solutions << std::endl;
+  std::cout << "  NaN solutions: " << nan_count << std::endl;
+  std::cout << "  Inf solutions: " << inf_count << std::endl;
+  std::cout << "  Min magnitude: " << min_magnitude << std::endl;
+  std::cout << "  Max magnitude: " << max_magnitude << std::endl;
+}
+
 namespace dp3 {
 namespace ddecal {
 
@@ -230,6 +300,9 @@ IterativeScalarSolver<VisMatrix>::Solve(
 
     has_previously_converged = has_converged || has_previously_converged;
 
+    DumpSolutionsToFile2(solutions, "solutions_dump_CPU.txt", iteration);
+    exit(0);  // Debugging exit point
+
   } while (!ReachedStoppingCriterion(iteration, has_converged,
                                      constraints_satisfied, step_magnitudes));
 
@@ -281,34 +354,34 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
                    next_solutions);
     
     // Print cb_data information
-    std::cout << "cb_data info:" << std::endl;
-    std::cout << "  NVisibilities: " << cb_data.NVisibilities() << std::endl;
-    std::cout << "  NDirections: " << cb_data.NDirections() << std::endl;
-    std::cout << "  NSolutionsForDirection(" << direction << "): " 
-              << cb_data.NSolutionsForDirection(direction) << std::endl;
-    std::cout << "  NSubSolutions (total): " << cb_data.NSubSolutions() << std::endl;
+    // std::cout << "cb_data info:" << std::endl;
+    // std::cout << "  NVisibilities: " << cb_data.NVisibilities() << std::endl;
+    // std::cout << "  NDirections: " << cb_data.NDirections() << std::endl;
+    // std::cout << "  NSolutionsForDirection(" << direction << "): " 
+    //           << cb_data.NSolutionsForDirection(direction) << std::endl;
+    // std::cout << "  NSubSolutions (total): " << cb_data.NSubSolutions() << std::endl;
     
-    // Print some antenna pair information for first few visibilities
-    const size_t max_vis_to_show = std::min(static_cast<size_t>(5), cb_data.NVisibilities());
-    std::cout << "  First " << max_vis_to_show << " antenna pairs:" << std::endl;
-    for (size_t i = 0; i < max_vis_to_show; ++i) {
-      std::cout << "    vis[" << i << "]: ant1=" << cb_data.Antenna1Index(i) 
-                << ", ant2=" << cb_data.Antenna2Index(i) 
-                << ", sol_idx=" << cb_data.SolutionIndex(direction, i) << std::endl;
-    }
+    // // Print some antenna pair information for first few visibilities
+    // const size_t max_vis_to_show = std::min(static_cast<size_t>(5), cb_data.NVisibilities());
+    // std::cout << "  First " << max_vis_to_show << " antenna pairs:" << std::endl;
+    // for (size_t i = 0; i < max_vis_to_show; ++i) {
+    //   std::cout << "    vis[" << i << "]: ant1=" << cb_data.Antenna1Index(i) 
+    //             << ", ant2=" << cb_data.Antenna2Index(i) 
+    //             << ", sol_idx=" << cb_data.SolutionIndex(direction, i) << std::endl;
+    // }
     
     // Print some model visibility norms for this direction
-    std::vector<double> model_norms;
-    for (size_t i = 0; i < max_vis_to_show; ++i) {
-      const auto& model_vis = cb_data.ModelVisibility(direction, i);
-      model_norms.push_back(Norm(model_vis));
-    }
-    if (!model_norms.empty()) {
-      std::cout << "  First " << max_vis_to_show << " model visibility norms for direction " << direction << ":" << std::endl;
-      for (size_t i = 0; i < model_norms.size(); ++i) {
-        std::cout << "    model_vis[" << i << "] norm: " << model_norms[i] << std::endl;
-      }
-    }
+    // std::vector<double> model_norms;
+    // for (size_t i = 0; i < max_vis_to_show; ++i) {
+    //   const auto& model_vis = cb_data.ModelVisibility(direction, i);
+    //   model_norms.push_back(Norm(model_vis));
+    // }
+    // if (!model_norms.empty()) {
+    //   std::cout << "  First " << max_vis_to_show << " model visibility norms for direction " << direction << ":" << std::endl;
+    //   for (size_t i = 0; i < model_norms.size(); ++i) {
+    //     std::cout << "    model_vis[" << i << "] norm: " << model_norms[i] << std::endl;
+    //   }
+    // }
     
     // PrintVectorSummary(v_residual, "v_residual_post_kernel_2");
     // PrintVectorSummary(solutions, "solutions_post_solve_direction");
@@ -326,10 +399,10 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
         non_zero_model_values++;
       }
     }
-    std::cout << "Count non-zero model values: " << non_zero_model_values 
-              << " out of " << total_model_values << " total" << std::endl;
+    // std::cout << "Count non-zero model values: " << non_zero_model_values 
+    //           << " out of " << total_model_values << " total" << std::endl;
     
-    if (direction == 0) exit(0);  // Exit after first direction only
+    // if (direction == 0) exit(0);  // Exit after first direction only
 
   }
 }

@@ -7,6 +7,8 @@
 #include <iostream>
 #include <vector>
 #include <numeric>
+#include <fstream>
+#include <iomanip>
 
 #include <cuda_runtime.h>
 #include <nvToolsExt.h>
@@ -19,6 +21,76 @@
 
 using aocommon::MC2x2;
 using aocommon::MC2x2F;
+
+void DumpSolutionsToFile(const std::vector<std::vector<std::complex<double>>>& solutions, 
+                         const std::string& filename, size_t iteration = 0) {
+  std::ofstream file(filename);
+  if (!file.is_open()) {
+    std::cerr << "ERROR: Could not open file " << filename << " for writing" << std::endl;
+    return;
+  }
+  
+  file << std::scientific << std::setprecision(15);
+  
+  // Write header with metadata
+  file << "# DP3 CUDA Solver Solutions Dump" << std::endl;
+  file << "# Iteration: " << iteration << std::endl;
+  file << "# Number of channel blocks: " << solutions.size() << std::endl;
+  file << "# Format: channel_block antenna_index real_part imaginary_part magnitude phase" << std::endl;
+  file << "# " << std::endl;
+  
+  for (size_t ch_block = 0; ch_block < solutions.size(); ++ch_block) {
+    const auto& ch_solutions = solutions[ch_block];
+    file << "# Channel block " << ch_block << " has " << ch_solutions.size() << " solutions" << std::endl;
+    
+    for (size_t ant_idx = 0; ant_idx < ch_solutions.size(); ++ant_idx) {
+      const auto& solution = ch_solutions[ant_idx];
+      double magnitude = std::abs(solution);
+      double phase = std::arg(solution);
+      
+      file << ch_block << " " 
+           << ant_idx << " " 
+           << solution.real() << " " 
+           << solution.imag() << " " 
+           << magnitude << " " 
+           << phase << std::endl;
+    }
+    file << std::endl; // Blank line between channel blocks
+  }
+  
+  file.close();
+  std::cout << "Solutions dumped to file: " << filename << std::endl;
+  std::cout << "Total channel blocks: " << solutions.size() << std::endl;
+  
+  // Print summary statistics
+  size_t total_solutions = 0;
+  size_t nan_count = 0;
+  size_t inf_count = 0;
+  double max_magnitude = 0.0;
+  double min_magnitude = std::numeric_limits<double>::max();
+  
+  for (const auto& ch_solutions : solutions) {
+    for (const auto& solution : ch_solutions) {
+      total_solutions++;
+      double mag = std::abs(solution);
+      if (std::isnan(mag)) {
+        nan_count++;
+      } else if (std::isinf(mag)) {
+        inf_count++;
+      } else {
+        max_magnitude = std::max(max_magnitude, mag);
+        min_magnitude = std::min(min_magnitude, mag);
+      }
+    }
+  }
+  
+  std::cout << "Solutions summary:" << std::endl;
+  std::cout << "  Total solutions: " << total_solutions << std::endl;
+  std::cout << "  NaN solutions: " << nan_count << std::endl;
+  std::cout << "  Inf solutions: " << inf_count << std::endl;
+  std::cout << "  Min magnitude: " << min_magnitude << std::endl;
+  std::cout << "  Max magnitude: " << max_magnitude << std::endl;
+}
 
 namespace {
 
@@ -232,7 +304,7 @@ void SolveDirection(const ChannelBlockData<VisMatrix>& channel_block_data,
       device_denominator);
 
   // Ensure the direction kernel completes before starting next solution kernel
-  stream.synchronize();
+  // stream.synchronize();
 
   LaunchScalarSolveNextSolutionKernel(
       stream, n_antennas, n_visibilities, n_direction_solutions, n_solutions,
@@ -253,19 +325,19 @@ void PerformIteration(
   const size_t n_visibilities = channel_block_data.NVisibilities();
 
   // Copy visibility data to residual buffer first
-  std::vector<VisMatrix> residual_data(n_visibilities);
-  std::copy(&channel_block_data.Visibility(0),
-            &channel_block_data.Visibility(0) + n_visibilities,
-            residual_data.begin());
+  // std::vector<VisMatrix> residual_data(n_visibilities);
+  // std::copy(&channel_block_data.Visibility(0),
+  //           &channel_block_data.Visibility(0) + n_visibilities,
+  //           residual_data.begin());
 
   // print residual for debugging
   // PrintVectorSummary(residual_data, "residual_pre_kernel");
 
   // Copy to GPU device
-  stream.memcpyHtoDAsync(device_residual, residual_data.data(),
-                         SizeOfResidual<VisMatrix>(n_visibilities));
-  // Synchronize the streams to ensure the residual is ready
-  stream.synchronize();
+  // stream.memcpyHtoDAsync(device_residual, residual_data.data(),
+  //                        SizeOfResidual<VisMatrix>(n_visibilities));
+  // // Synchronize the streams to ensure the residual is ready
+  // stream.synchronize();
 
   // Subtract all directions with their current solutions
   // In-place: residual -> residual
@@ -273,18 +345,18 @@ void PerformIteration(
                              device_antenna_pairs, device_solution_map,
                              device_solutions, device_model, device_residual);
 
-  // Copy result back from GPU and print for debugging
-  stream.memcpyDtoHAsync(residual_data.data(), device_residual,
-                         SizeOfResidual<VisMatrix>(n_visibilities));
-  stream.synchronize();
-  // PrintVectorSummary(residual_data, "v_residual_post_kernel");
+  // // Copy result back from GPU and print for debugging
+  // stream.memcpyDtoHAsync(residual_data.data(), device_residual,
+  //                        SizeOfResidual<VisMatrix>(n_visibilities));
+  // stream.synchronize();
+  // // PrintVectorSummary(residual_data, "v_residual_post_kernel");
 
-  // Copy result back from GPU and print for debugging
-  stream.memcpyDtoHAsync(residual_data.data(), device_residual,
-                         SizeOfResidual<VisMatrix>(n_visibilities));
-  stream.synchronize();
-  // PrintVectorSummary(residual_data, "v_residual_post_kernel");
-  // exit(0);
+  // // Copy result back from GPU and print for debugging
+  // stream.memcpyDtoHAsync(residual_data.data(), device_residual,
+  //                        SizeOfResidual<VisMatrix>(n_visibilities));
+  // stream.synchronize();
+  // // PrintVectorSummary(residual_data, "v_residual_post_kernel");
+  // // exit(0);
 
   for (size_t direction = 0; direction != n_directions; direction++) {
     // Be aware that we purposely still use the subtraction with 'old'
@@ -413,27 +485,27 @@ void PerformIteration(
     // std::cout << "  GPU non-zero model values: " << gpu_non_zero_count
     //           << " out of " << n_visibilities << std::endl;
 
-    stream.memcpyDtoHAsync(residual_data.data(), device_residual_temp,
-                           SizeOfResidual<VisMatrix>(n_visibilities));
-    stream.synchronize();
+    // stream.memcpyDtoHAsync(residual_data.data(), device_residual_temp,
+    //                        SizeOfResidual<VisMatrix>(n_visibilities));
+    // stream.synchronize();
     // PrintVectorSummary(residual_data, "v_residual_post_kernel_2");
     // exit(0);
 
     // Move device_solutions to host (CPU) for analysis - use separate buffers
-    std::vector<std::complex<double>> current_solutions_data(n_antennas *
-                                                             n_solutions);
-    std::vector<std::complex<double>> next_solutions_data(n_antennas *
-                                                          n_solutions);
+    // std::vector<std::complex<double>> current_solutions_data(n_antennas *
+    //                                                          n_solutions);
+    // std::vector<std::complex<double>> next_solutions_data(n_antennas *
+    //                                                       n_solutions);
 
-    stream.memcpyDtoHAsync(
-        current_solutions_data.data(),
-        device_solutions,
-        SizeOfSolutions(n_directions, n_antennas, n_solutions, 1)); // For scalar solver, polarizations = 1
-    stream.memcpyDtoHAsync(
-        next_solutions_data.data(),
-        device_next_solutions,
-        SizeOfSolutions(n_directions, n_antennas, n_solutions, 1)); // For scalar solver, polarizations = 1
-    stream.synchronize();
+    // stream.memcpyDtoHAsync(
+    //     current_solutions_data.data(),
+    //     device_solutions,
+    //     SizeOfSolutions(n_directions, n_antennas, n_solutions, 1)); // For scalar solver, polarizations = 1
+    // stream.memcpyDtoHAsync(
+    //     next_solutions_data.data(),
+    //     device_next_solutions,
+    //     SizeOfSolutions(n_directions, n_antennas, n_solutions, 1)); // For scalar solver, polarizations = 1
+    // stream.synchronize();
 
     // PrintVectorSummary(current_solutions_data,
     //                    "solutions_post_solve_direction");
@@ -450,7 +522,7 @@ void PerformIteration(
 
   LaunchStepKernel(stream, n_visibilities, device_solutions,
                    device_next_solutions, phase_only, step_size);
-  stream.synchronize();
+  // stream.synchronize();
   // std::cout << "DEBUG: Step kernel launched." << std::endl;
 }
 
@@ -708,7 +780,7 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
   stream.memcpyHtoDAsync(device_solutions, host_solutions,
                          SizeOfSolutions(NDirections(), NAntennas(), NSubSolutions(), NSolutionPolarizations()));
 
-  stream.synchronize();
+  // stream.synchronize();
   stream.record(event);
 }
 template <typename VisMatrix>
@@ -946,7 +1018,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
         // Start iteration (dtod copies and kernel execution only)
         // std::cout << "DEBUG: Starting iteration: " << iteration
         //           << " for channel block " << ch_block << std::endl;
-        cudaDeviceSynchronize();
+        // cudaDeviceSynchronize();
         PerformIteration<VisMatrix>(
             phase_only, step_size, channel_block_data, *execute_stream_,
             NAntennas(), NSubSolutions(), NDirections(),
@@ -958,7 +1030,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
             gpu_buffers_.antenna_pairs[buffer_id], *gpu_buffers_.numerator,
             *gpu_buffers_.denominator);
 
-        cudaDeviceSynchronize();
+        // cudaDeviceSynchronize();
         // std::cout << "DEBUG: Finished iteration: " << iteration
         //           << " for channel block " << ch_block << " out of:  " <<
         //           NChannelBlocks() << std::endl;
@@ -988,6 +1060,8 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
       PostProcessing(iteration, time, has_previously_converged, has_converged,
                      constraints_satisfied, done, result, solutions,
                      next_solutions, step_magnitudes, stat_stream);
+      DumpSolutionsToFile(solutions, "solutions_dump_GPU.txt", iteration);
+      exit(0);  // Debugging exit point
       nvtxRangeEnd(nvtx_range_cpu);
     } while (!done);
 
@@ -1001,6 +1075,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
     }
 
     if (!keep_buffers_) DeallocateHostBuffers();
+    // exit(0);
     return result;
   } catch (const std::exception& e) {
     // Clean up partially allocated resources on error

@@ -10,7 +10,7 @@
 #include "Complex.h"
 #include "MatrixComplex2x2.h"
 
-#define BLOCK_SIZE 1
+#define BLOCK_SIZE 128
 
 #define cudaCheckError() {                                      \
  cudaError_t e=cudaGetLastError();                                 \
@@ -155,8 +155,8 @@ __device__ void SolveScalarDirection(size_t vis_index, size_t n_visibilities,
         antenna * n_direction_solutions + rel_solution_index;
 
     // Atomic reduction into global memory - for scalar solver, we only need one value
-    atomicAdd(&numerator[full_solution_index * 2 + 0].x, result.x);
-    atomicAdd(&numerator[full_solution_index * 2 + 0].y, result.y);
+    atomicAdd(&numerator[full_solution_index * 2].x, result.x);
+    atomicAdd(&numerator[full_solution_index * 2].y, result.y);
     
     atomicAdd(&denominator[full_solution_index * 2],
               cuCabsf(changed_model) * cuCabsf(changed_model));
@@ -214,7 +214,6 @@ void LaunchScalarSolveDirectionKernel(
       Cast<float>(denominator));
 
   cudaCheckError();
-  cudaDeviceSynchronize(); // Ensure printf output is flushed
 }
 
 __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
