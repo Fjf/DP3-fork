@@ -34,7 +34,7 @@ __device__ void AddOrSubtractScalar(size_t vis_index, size_t n_solutions,
   const uint32_t antenna_2 = antenna_pairs[vis_index * 2 + 1];
 
   if (antenna_1 > 10000) {
-    printf("Antenna_1 is too large: %lu", antenna_1);
+    // printf("Antenna_1 is too large: %lu", antenna_1);
     return;
   }
 
@@ -218,16 +218,6 @@ void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
       Cast<const unsigned int>(solution_map),
       Cast<const cuDoubleComplex>(solutions), Cast<const cuFloatComplex>(model),
       Cast<cuFloatComplex>(residual));
-
-  // cudaMemcpyHostToDevice
-  size_t  arr_size =  sizeof(uint32_t) * 2 * n_visibilities;
-  uint32_t* host_data = (uint32_t*)malloc(arr_size);
-  cudaMemcpy(host_data, antenna_pairs,  arr_size, cudaMemcpyDeviceToHost);
-  std::cout << "Antenna 1 = " << host_data[0] << std::endl;
-  if (host_data[0] > 10000) {
-    exit(1);
-  }
-
 }
 
 __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
