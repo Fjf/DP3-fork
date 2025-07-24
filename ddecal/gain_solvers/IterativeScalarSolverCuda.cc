@@ -780,8 +780,7 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
   stream.memcpyHtoDAsync(device_solutions, host_solutions,
                          SizeOfSolutions(NDirections(), NAntennas(), NSubSolutions(), NSolutionPolarizations()));
 
-  // stream.synchronize();
-  event.record(stream);
+  stream.record(event);
 }
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::PostProcessing(
@@ -971,76 +970,40 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
         const ChannelBlockData<VisMatrix>& channel_block_data =
             data.ChannelBlock(ch_block);
 
-        const int buffer_id = ch_block % 2;  // Use double buffering
-        // Copy input data for first channel block
-        // if (ch_block == 0) {
-        if (ch_block > 1) {
-          // std::cout << "DEBUG: Waiting for previous channel block to finish "
-          //           << "before copying next channel block." << std::endl;
-          // host_to_device_stream_->wait(output_copied_events[ch_block - 1]);
-          // host_to_device_stream_->wait(input_copied_events[ch_block - 1]);
-          host_to_device_stream_->wait(compute_finished_events[ch_block - 2]);
+        const size_t buffer_id = ch_block % 2;
+        if (ch_block > 0) {
+          host_to_device_stream_->wait(output_copied_events[ch_block - 1]);
         }
-        // std::cout << "Copying first channel block" << std::endl;
-        CopyHostToHost(ch_block, iteration == 0, data, solutions[ch_block],
-                        *host_to_device_stream_);
 
-        CopyHostToDevice(ch_block, buffer_id, *host_to_device_stream_,
-                          input_copied_events[ch_block], data);
-          // std::cout << "Done copying first channel block" << std::endl;
-        // }
+        // Copy input data for first channel block
+        if (ch_block == 0) {
+          CopyHostToHost(ch_block, iteration == 0, data, solutions[ch_block],
+                         *host_to_device_stream_);
+          CopyHostToDevice(ch_block, buffer_id, *host_to_device_stream_,
+                           input_copied_events[ch_block], data);
+        }
 
-        // As soon as input_copied_events[0] is triggered, the input data is
-        // copied to the GPU and the host buffers could theoretically be reused.
-        // However, since the size of these buffers may differ, every channel
-        // block has its own set of host buffers anyway.
-        // Before starting kernel execution for the current channel block (on a
-        // different stream), the copy of data for the next channel block (if
-        // any) is scheduled using a second set of GPU buffers.
-        // if (ch_block < NChannelBlocks() - 1) {
-        //   if (ch_block > 0) {
-        //     std::cout << "DEBUG: Waiting for previous channel block to finish "
-        //               << "before copying next channel block." << std::endl;
-        //     host_to_device_stream_->wait(output_copied_events[ch_block - 1]);
-        //     host_to_device_stream_->wait(input_copied_events[ch_block - 1]);
-        //     host_to_device_stream_->wait(compute_finished_events[ch_block - 1]);
-        //   }
-        //   CopyHostToHost(ch_block + 1, iteration == 0, data,
-        //                  solutions[ch_block + 1], *host_to_device_stream_);
-        
-        //   // Since the computation of channel block <n> and <n + 2> share the
-        //   // same set of GPU buffers, wait for the compute_finished event to be
-        //   // triggered before overwriting their contents.
-        //   if (ch_block > 1) {
-        //     std::cout << "DEBUG: Waiting for compute finished event for channel block "
-        //               << (ch_block - 2) << std::endl;
-        //     host_to_device_stream_->wait(compute_finished_events[ch_block - 1]);
-        //     std::cout << "DEBUG: Copying host to device for channel block "
-        //               << (ch_block + 1) << std::endl;
-        //   }
-        //   // std::cout << "DEBUG: Copying host to device for channel block "
-        //   // << (ch_block + 1) << std::endl;
-        //   CopyHostToDevice(ch_block + 1, buffer_id,
-        //                    *host_to_device_stream_,
-        //                    input_copied_events[ch_block + 1], data);
-        // }
+        if (ch_block < NChannelBlocks() - 1) {
+          CopyHostToHost(ch_block + 1, iteration == 0, data,
+                         solutions[ch_block + 1], *host_to_device_stream_);
+          if (ch_block > 1) {
+            host_to_device_stream_->wait(compute_finished_events[ch_block - 2]);
+          }
+          CopyHostToDevice(ch_block + 1, (ch_block + 1) % 2,
+                           *host_to_device_stream_,
+                           input_copied_events[ch_block + 1], data);
+        }
 
+
+        // CopyHostToHost(ch_block, iteration == 0, data, solutions[ch_block],
+        //                *host_to_device_stream_);
+        // CopyHostToDevice(ch_block, buffer_id, *host_to_device_stream_,
+        //                  input_copied_events[ch_block], data);
         // Wait for input of the current channel block to be copied
-        // std::cout << "DEBUG: Waiting for input data to be copied for channel block "
-        //           << ch_block << std::endl;
         execute_stream_->wait(input_copied_events[ch_block]);
-        // std::cout << "DEBUG: Starting computation for channel block " << std::endl;
-        // Wait for output buffer to be free
         if (ch_block > 1) {
           execute_stream_->wait(output_copied_events[ch_block - 2]);
         }
-        // std::cout << "DEBUG: Copying input data for channel block "
-        //           << ch_block << " to GPU buffers." << std::endl;
-
-        // Start iteration (dtod copies and kernel execution only)
-        // std::cout << "DEBUG: Starting iteration: " << iteration
-        //           << " for channel block " << ch_block << std::endl;
-        // cudaDeviceSynchronize();
 
 
         PerformIteration<VisMatrix>(
@@ -1097,7 +1060,8 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
       // exit(0);  // Debugging exit point
       nvtxRangeEnd(nvtx_range_cpu);
     } while (!done);
-exit(0);  // Debugging exit point
+    exit(0);  // Debugging exit point
+
     // When we have not converged yet, we set the nr of iterations to the max+1,
     // so that non-converged iterations can be distinguished from converged
     // ones.

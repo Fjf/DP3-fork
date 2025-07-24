@@ -30,6 +30,7 @@ __device__ void AddOrSubtract(size_t vis_index, size_t n_solutions,
                               cuM2x2FloatComplex* residual_out) {
   const uint32_t antenna_1 = antenna_pairs[vis_index * 2 + 0];
   const uint32_t antenna_2 = antenna_pairs[vis_index * 2 + 1];
+
   const size_t solution_index = solution_map[vis_index];
   const cuDoubleComplex* solution_1 =
       &solutions[(antenna_1 * n_solutions + solution_index) * 2];
