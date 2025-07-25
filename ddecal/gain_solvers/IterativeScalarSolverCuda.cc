@@ -276,7 +276,6 @@ void SolveDirection(const ChannelBlockData<VisMatrix>& channel_block_data,
                     cu::DeviceMemory& device_solutions,
                     cu::DeviceMemory& device_model,
                     cu::DeviceMemory& device_next_solutions,
-                    cu::DeviceMemory& device_antenna_pairs,
                     cu::DeviceMemory& device_numerator,
                     cu::DeviceMemory& device_denominator) {
   // Calculate this equation, given ant a:
@@ -299,18 +298,19 @@ void SolveDirection(const ChannelBlockData<VisMatrix>& channel_block_data,
                          SizeOfResidual<VisMatrix>(n_visibilities));
 
   LaunchScalarSolveDirectionKernel(
-      stream, n_visibilities, n_direction_solutions, n_solutions, direction,
-      device_antenna_pairs, device_solution_map, device_solutions, device_model,
+      stream, n_visibilities, n_direction_solutions, n_solutions, n_antennas, direction,
+      device_solution_map, device_solutions, device_model,
       device_residual_in, device_residual_temp, device_numerator,
       device_denominator);
+
 
   // Ensure the direction kernel completes before starting next solution kernel
   // stream.synchronize();
 
   LaunchScalarSolveNextSolutionKernel(
       stream, n_antennas, n_visibilities, n_direction_solutions, n_solutions,
-      direction, device_antenna_pairs, device_solution_map,
-      device_next_solutions, device_numerator, device_denominator);
+      direction, device_solution_map, device_next_solutions, device_numerator,
+      device_denominator);
 }
 
 template <typename VisMatrix>
@@ -321,8 +321,7 @@ void PerformIteration(
     cu::DeviceMemory& device_solution_map, cu::DeviceMemory& device_solutions,
     cu::DeviceMemory& device_next_solutions, cu::DeviceMemory& device_residual,
     cu::DeviceMemory& device_residual_temp, cu::DeviceMemory& device_model,
-    cu::DeviceMemory& device_antenna_pairs, cu::DeviceMemory& device_numerator,
-    cu::DeviceMemory& device_denominator) {
+    cu::DeviceMemory& device_numerator, cu::DeviceMemory& device_denominator) {
   const size_t n_visibilities = channel_block_data.NVisibilities();
 
   // Copy visibility data to residual buffer first
@@ -342,8 +341,7 @@ void PerformIteration(
 
   // Subtract all directions with their current solutions
   // In-place: residual -> residual
-  LaunchScalarSubtractKernel(stream, n_directions, n_visibilities, n_solutions,
-                             device_antenna_pairs, device_solution_map,
+  LaunchScalarSubtractKernel(stream, n_directions, n_visibilities, n_solutions, n_antennas, device_solution_map,
                              device_solutions, device_model, device_residual);
 
   // // Copy result back from GPU and print for debugging
@@ -367,7 +365,7 @@ void PerformIteration(
         channel_block_data, stream, n_antennas, n_solutions, direction,
         device_residual, device_residual_temp, device_solution_map,
         device_solutions, device_model, device_next_solutions,
-        device_antenna_pairs, device_numerator, device_denominator);
+        device_numerator, device_denominator);
   }
 
   LaunchStepKernel(stream, n_visibilities, device_solutions,
@@ -433,8 +431,8 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
       SizeOfDenominator(NAntennas(), max_n_direction_solutions));
   // Allocating two buffers allows double buffering.
   for (size_t i = 0; i < 2; i++) {
-    gpu_buffers_.antenna_pairs.emplace_back(
-        SizeOfAntennaPairs(max_n_visibilities));
+    // gpu_buffers_.antenna_pairs.emplace_back(
+    //     SizeOfAntennaPairs(max_n_visibilities));
     gpu_buffers_.solution_map.emplace_back(
         SizeOfSolutionMap(max_n_directions, max_n_visibilities));
     gpu_buffers_.solutions.emplace_back(SizeOfSolutions(NVisibilities()));
@@ -453,10 +451,10 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
 
   try {
     // Verify that device memory allocations succeeded
-    for (const auto& mem : gpu_buffers_.antenna_pairs) {
-      if (!mem)
-        throw std::runtime_error("antenna_pairs buffer allocation failed");
-    }
+    // for (const auto& mem : gpu_buffers_.antenna_pairs) {
+    //   if (!mem)
+    //     throw std::runtime_error("antenna_pairs buffer allocation failed");
+    // }
     for (const auto& mem : gpu_buffers_.solution_map) {
       if (!mem)
         throw std::runtime_error("solution_map buffer allocation failed");
@@ -492,7 +490,7 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
 
   } catch (const std::exception& e) {
     // Clean up any allocated buffers
-    gpu_buffers_.antenna_pairs.clear();
+    // gpu_buffers_.antenna_pairs.clear();
     gpu_buffers_.solution_map.clear();
     gpu_buffers_.solutions.clear();
     gpu_buffers_.next_solutions.clear();
@@ -540,20 +538,20 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateHostBuffers(
     host_buffers_.residual.emplace_back(
         SizeOfResidual<VisMatrix>(n_visibilities));
     host_buffers_.solutions.emplace_back(SizeOfSolutions(NVisibilities()));
-    host_buffers_.antenna_pairs.emplace_back(
-        SizeOfAntennaPairs(n_visibilities));
+    // host_buffers_.antenna_pairs.emplace_back(
+    //     SizeOfAntennaPairs(n_visibilities));
     host_buffers_.solution_map.emplace_back(
         SizeOfSolutionMap(n_directions, n_visibilities));
 
-    uint32_t* antenna_pairs =
-        static_cast<uint32_t*>(host_buffers_.antenna_pairs[ch_block]);
-    for (size_t visibility_index = 0; visibility_index < n_visibilities;
-         visibility_index++) {
-      antenna_pairs[visibility_index * 2 + 0] =
-          channel_block_data.Antenna1Index(visibility_index);
-      antenna_pairs[visibility_index * 2 + 1] =
-          channel_block_data.Antenna2Index(visibility_index);
-    }
+    // uint32_t* antenna_pairs =
+    //     static_cast<uint32_t*>(host_buffers_.antenna_pairs[ch_block]);
+    // for (size_t visibility_index = 0; visibility_index < n_visibilities;
+    //      visibility_index++) {
+    //   antenna_pairs[visibility_index * 2 + 0] =
+          // channel_block_data.Antenna1Index(visibility_index);
+    //   antenna_pairs[visibility_index * 2 + 1] =
+    //       channel_block_data.Antenna2Index(visibility_index);
+    // }
   }
 }
 
@@ -563,7 +561,6 @@ void IterativeScalarSolverCuda<VisMatrix>::DeallocateHostBuffers() {
   host_buffers_.model.clear();
   host_buffers_.residual.clear();
   host_buffers_.solutions.clear();
-  host_buffers_.antenna_pairs.clear();
   host_buffers_.solution_map.clear();
   host_buffers_initialized_ = false;
 }
@@ -605,14 +602,14 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
   const size_t n_visibilities = channel_block_data.NVisibilities();
 
   cu::HostMemory& host_solution_map = host_buffers_.solution_map[ch_block];
-  cu::HostMemory& host_antenna_pairs = host_buffers_.antenna_pairs[ch_block];
+  // cu::HostMemory& host_antenna_pairs = host_buffers_.antenna_pairs[ch_block];
   cu::HostMemory& host_model = host_buffers_.model[ch_block];
   cu::HostMemory& host_residual = host_buffers_.residual[ch_block];
   cu::HostMemory& host_solutions = host_buffers_.solutions[ch_block];
 
   cu::DeviceMemory& device_solution_map = gpu_buffers_.solution_map[buffer_id];
-  cu::DeviceMemory& device_antenna_pairs =
-      gpu_buffers_.antenna_pairs[buffer_id];
+  // cu::DeviceMemory& device_antenna_pairs =
+  //     gpu_buffers_.antenna_pairs[buffer_id];
   cu::DeviceMemory& device_model = gpu_buffers_.model[buffer_id];
   cu::DeviceMemory& device_residual = gpu_buffers_.residual[buffer_id];
   cu::DeviceMemory& device_solutions = gpu_buffers_.solutions[buffer_id];
@@ -623,8 +620,8 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
                          SizeOfModel<VisMatrix>(n_directions, n_visibilities));
   stream.memcpyHtoDAsync(device_residual, host_residual,
                          SizeOfResidual<VisMatrix>(n_visibilities));
-  stream.memcpyHtoDAsync(device_antenna_pairs, host_antenna_pairs,
-                         SizeOfAntennaPairs(n_visibilities));
+  // stream.memcpyHtoDAsync(device_antenna_pairs, host_antenna_pairs,
+  //                        SizeOfAntennaPairs(n_visibilities));
 
   stream.memcpyHtoDAsync(device_solutions, host_solutions,
                          SizeOfSolutions(NVisibilities()));
@@ -695,13 +692,11 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
 
     // Validate essential buffers are allocated
     if (host_buffers_.model.empty() || host_buffers_.residual.empty() ||
-        host_buffers_.solutions.empty() ||
-        host_buffers_.antenna_pairs.empty()) {
+        host_buffers_.solutions.empty()) {
       throw std::runtime_error("Host buffer vectors not properly allocated");
     }
 
-    if (gpu_buffers_.antenna_pairs.empty() ||
-        gpu_buffers_.solution_map.empty() || gpu_buffers_.solutions.empty() ||
+    if (gpu_buffers_.solution_map.empty() || gpu_buffers_.solutions.empty() ||
         gpu_buffers_.next_solutions.empty() || gpu_buffers_.model.empty() ||
         gpu_buffers_.residual.empty()) {
       throw std::runtime_error("GPU buffer vectors not properly allocated");
@@ -849,8 +844,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
             gpu_buffers_.solutions[buffer_id],
             gpu_buffers_.next_solutions[buffer_id],
             gpu_buffers_.residual[buffer_id], gpu_buffers_.residual[2],
-            gpu_buffers_.model[buffer_id],
-            gpu_buffers_.antenna_pairs[buffer_id], *gpu_buffers_.numerator,
+            gpu_buffers_.model[buffer_id], *gpu_buffers_.numerator,
             *gpu_buffers_.denominator);
 
         execute_stream_->record(compute_finished_events[ch_block]);
@@ -887,7 +881,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
 
       nvtxRangeEnd(nvtx_range_cpu);
     } while (!done);
-    exit(0);  // Debugging exit point
+    // exit(0);  // Debugging exit point
 
     // When we have not converged yet, we set the nr of iterations to the max+1,
     // so that non-converged iterations can be distinguished from converged

@@ -23,20 +23,17 @@
 }
 
 template <bool Add>
-__device__ void AddOrSubtractScalar(size_t vis_index, size_t n_solutions,
-                              const unsigned int* antenna_pairs,
+__device__ void AddOrSubtractScalar(size_t vis_index, size_t n_solutions, size_t n_antenna,
                               const unsigned int* solution_map,
                               const cuDoubleComplex* solutions,
                               const cuFloatComplex* model,
                               const cuFloatComplex* residual_in,
                               cuFloatComplex* residual_out) {
-  const uint32_t antenna_1 = antenna_pairs[vis_index * 2 + 0];
-  const uint32_t antenna_2 = antenna_pairs[vis_index * 2 + 1];
-
-  if (antenna_1 > 10000) {
-    // printf("Antenna_1 is too large: %lu", antenna_1);
-    return;
-  }
+  // Compute triangular index for the antenna pair
+  // The pattern is: for each antenna_2, iterate through antenna_1 < antenna
+  const size_t local_vis_index = vis_index % (n_antenna * (n_antenna - 1) / 2);
+  const size_t antenna_2 = static_cast<uint32_t>((1.0 + std::sqrt(1.0 + 8.0 * local_vis_index)) / 2.0);
+  const size_t antenna_1 = local_vis_index - (antenna_2 * (antenna_2 - 1)) / 2;  
 
   const size_t solution_index = solution_map[vis_index];
   const cuDoubleComplex solution_1 =
@@ -58,16 +55,19 @@ __device__ void AddOrSubtractScalar(size_t vis_index, size_t n_solutions,
 }
 
 __device__ void SolveScalarDirection(size_t vis_index, size_t n_visibilities,
-                               size_t n_direction_solutions, size_t n_solutions,
-                               const unsigned int* antenna_pairs,
+                               size_t n_direction_solutions, size_t n_solutions, size_t n_antenna,
                                const unsigned int* solution_map,
                                const cuDoubleComplex* solutions,
                                const cuFloatComplex* model,
                                const cuFloatComplex* residual,
                                cuFloatComplex* numerator, float* denominator) {
   // Load correct variables to compute on.
-  const size_t antenna_1 = antenna_pairs[vis_index * 2];
-  const size_t antenna_2 = antenna_pairs[vis_index * 2 + 1];
+  // Derive antenna indices from vis_index (for verification)
+  // The pattern is: for each antenna_2, iterate through antenna_1 < antenna_2
+  // vis_index 0: (0,1), vis_index 1: (0,2), vis_index 2: (1,2), vis_index 3: (0,3), etc.
+  const size_t local_vis_index = vis_index % (n_antenna * (n_antenna - 1) / 2);
+  const size_t antenna_2 = static_cast<uint32_t>((1.0 + std::sqrt(1.0 + 8.0 * local_vis_index)) / 2.0);
+  const size_t antenna_1 = local_vis_index - (antenna_2 * (antenna_2 - 1)) / 2;
 
   const size_t solution_index = solution_map[vis_index];
 
@@ -88,7 +88,8 @@ __device__ void SolveScalarDirection(size_t vis_index, size_t n_visibilities,
   // - num = data_ab^H * solutions_a * model_ab
   // - den = norm(model_ab^H * solutions_a)
   for (size_t i = 0; i < 2; i++) {
-    const size_t antenna = antenna_pairs[vis_index * 2 + i];
+    // const size_t antenna = antenna_pairs[vis_index * 2 + i];
+    const size_t antenna = (i == 0) ? antenna_1 : antenna_2;
 
     cuFloatComplex result;
     cuFloatComplex changed_model;
@@ -121,8 +122,6 @@ __device__ void SolveScalarDirection(size_t vis_index, size_t n_visibilities,
 
     const size_t full_solution_index =
         antenna * n_direction_solutions + rel_solution_index;
-
-    // Atomic reduction into global memory - for scalar solver, we only need one value
     atomicAdd(&numerator[full_solution_index * 2].x, result.x);
     atomicAdd(&numerator[full_solution_index * 2].y, result.y);
 
@@ -132,9 +131,8 @@ __device__ void SolveScalarDirection(size_t vis_index, size_t n_visibilities,
 }
 
 __global__ void SolveScalarDirectionKernel(
-    size_t n_visibilities, size_t n_direction_solutions, size_t n_solutions,
-    const unsigned int* antenna_pairs, const unsigned int* solution_map,
-    const cuDoubleComplex* solutions, const cuFloatComplex* model,
+    size_t n_visibilities, size_t n_direction_solutions, size_t n_solutions, size_t n_antenna,
+    const unsigned int* solution_map, const cuDoubleComplex* solutions, const cuFloatComplex* model,
     const cuFloatComplex* residual_in, cuFloatComplex* residual_temp,
     cuFloatComplex* numerator, float* denominator) {
   const size_t vis_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -144,16 +142,16 @@ __global__ void SolveScalarDirectionKernel(
   }
 
   // Use the direction-specific pointers (solution_map and model are already offset for the current direction)
-  AddOrSubtractScalar<true>(vis_index, n_solutions, antenna_pairs, solution_map,
+  AddOrSubtractScalar<true>(vis_index, n_solutions, n_antenna, solution_map,
                       solutions, model, residual_in, residual_temp);
-  SolveScalarDirection(vis_index, n_visibilities, n_direction_solutions, n_solutions,
-                 antenna_pairs, solution_map, solutions, model, residual_temp,
+  SolveScalarDirection(vis_index, n_visibilities, n_direction_solutions, n_solutions, n_antenna,
+                solution_map, solutions, model, residual_temp,
                  numerator, denominator);
 }
 
 void LaunchScalarSolveDirectionKernel(
     cudaStream_t stream, size_t n_visibilities, size_t n_direction_solutions,
-    size_t n_solutions, size_t direction, cu::DeviceMemory& antenna_pairs,
+    size_t n_solutions, size_t n_antenna, size_t direction,
     cu::DeviceMemory& solution_map, cu::DeviceMemory& solutions,
     cu::DeviceMemory& model, cu::DeviceMemory& residual_in,
     cu::DeviceMemory& residual_temp, cu::DeviceMemory& numerator,
@@ -167,8 +165,7 @@ void LaunchScalarSolveDirectionKernel(
   const cuFloatComplex* model_direction =
       Cast<const cuFloatComplex>(model) + direction_offset;
   SolveScalarDirectionKernel<<<grid_dim, block_dim, 0, stream>>>(
-      n_visibilities, n_direction_solutions, n_solutions,
-      Cast<const unsigned int>(antenna_pairs), solution_map_direction,
+      n_visibilities, n_direction_solutions, n_solutions, n_antenna, solution_map_direction,
       Cast<const cuDoubleComplex>(solutions), model_direction,
       Cast<const cuFloatComplex>(residual_in),
       Cast<cuFloatComplex>(residual_temp), Cast<cuFloatComplex>(numerator),
@@ -178,8 +175,7 @@ void LaunchScalarSolveDirectionKernel(
 }
 
 __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
-                               size_t n_solutions,
-                               const unsigned int* antenna_pairs,
+                               size_t n_solutions, size_t n_antenna,
                                const unsigned int* solution_map,
                                const cuDoubleComplex* solutions,
                                const cuFloatComplex* model,
@@ -195,15 +191,14 @@ __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
         solution_map + direction_offset;
     const cuFloatComplex* model_direction = model + direction_offset;
     AddOrSubtractScalar<false>(
-        vis_index, n_solutions, antenna_pairs, solution_map_direction,
+        vis_index, n_solutions, n_antenna, solution_map_direction,
         solutions, model_direction,
         residual, residual);  // in-place
   }
 }
 // TODO: Error is here, fix please
 void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
-                          size_t n_visibilities, size_t n_solutions,
-                          cu::DeviceMemory& antenna_pairs,
+                          size_t n_visibilities, size_t n_solutions, size_t n_antenna,
                           cu::DeviceMemory& solution_map,
                           cu::DeviceMemory& solutions, cu::DeviceMemory& model,
                           cu::DeviceMemory& residual) {
@@ -213,8 +208,7 @@ void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
 
 
   SubtractScalarKernel<<<grid_dim, block_dim, 0, stream>>>(
-      n_directions, n_visibilities, n_solutions,
-      Cast<const unsigned int>(antenna_pairs),
+      n_directions, n_visibilities, n_solutions, n_antenna,
       Cast<const unsigned int>(solution_map),
       Cast<const cuDoubleComplex>(solutions), Cast<const cuFloatComplex>(model),
       Cast<cuFloatComplex>(residual));
@@ -257,9 +251,8 @@ __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
 void LaunchScalarSolveNextSolutionKernel(
     cudaStream_t stream, size_t n_antennas, size_t n_visibilities,
     size_t n_direction_solutions, size_t n_solutions, size_t direction,
-    cu::DeviceMemory& antenna_pairs, cu::DeviceMemory& solution_map,
-    cu::DeviceMemory& next_solutions, cu::DeviceMemory& numerator,
-    cu::DeviceMemory& denominator) {
+    cu::DeviceMemory& solution_map, cu::DeviceMemory& next_solutions,
+    cu::DeviceMemory& numerator, cu::DeviceMemory& denominator) {
 
   const size_t block_dim = BLOCK_SIZE;
   const size_t grid_dim = (n_antennas + block_dim - 1) / block_dim;

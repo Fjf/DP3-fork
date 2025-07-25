@@ -300,8 +300,8 @@ IterativeScalarSolver<VisMatrix>::Solve(
 
     has_previously_converged = has_converged || has_previously_converged;
 
-    DumpSolutionsToFile2(solutions, "solutions_dump_CPU.txt", iteration);
-    exit(0);  // Debugging exit point
+    // DumpSolutionsToFile2(solutions, "solutions_dump_CPU.txt", iteration);
+    // exit(0);  // Debugging exit point
 
   } while (!ReachedStoppingCriterion(iteration, has_converged,
                                      constraints_satisfied, step_magnitudes));

@@ -10,24 +10,21 @@
 #include <cudawrappers/cu.hpp>
 
 void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
-                          size_t n_visibilities, size_t n_solutions,
-                          cu::DeviceMemory& antenna_pairs,
+                          size_t n_visibilities, size_t n_solutions, size_t n_antenna,
                           cu::DeviceMemory& solution_map,
                           cu::DeviceMemory& solutions, cu::DeviceMemory& model,
                           cu::DeviceMemory& residual);
 
 void LaunchScalarSolveNextSolutionKernel(
     cudaStream_t stream, size_t n_antennas, size_t n_visibilities,
-    size_t n_direction_solutions, size_t n_solutions, size_t direction,
-    cu::DeviceMemory& antenna_pairs, cu::DeviceMemory& solution_map,
+    size_t n_direction_solutions, size_t n_solutions, size_t direction, cu::DeviceMemory& solution_map,
     cu::DeviceMemory& next_solutions, cu::DeviceMemory& numerator,
     cu::DeviceMemory& denominator);
 
 void LaunchScalarSolveDirectionKernel(
     cudaStream_t stream, size_t n_visibilities, size_t n_direction_solutions,
-    size_t n_solutions, size_t direction, cu::DeviceMemory& antenna_pairs,
-    cu::DeviceMemory& solution_map, cu::DeviceMemory& solutions,
-    cu::DeviceMemory& model, cu::DeviceMemory& residual_in,
+    size_t n_solutions, size_t n_antenna, size_t direction, cu::DeviceMemory& solution_map,
+    cu::DeviceMemory& solutions, cu::DeviceMemory& model, cu::DeviceMemory& residual_in,
     cu::DeviceMemory& residual_temp, cu::DeviceMemory& numerator,
     cu::DeviceMemory& denominator);
 
