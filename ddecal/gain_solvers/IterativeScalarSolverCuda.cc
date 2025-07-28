@@ -324,38 +324,10 @@ void PerformIteration(
     cu::DeviceMemory& device_numerator, cu::DeviceMemory& device_denominator) {
   const size_t n_visibilities = channel_block_data.NVisibilities();
 
-  // Copy visibility data to residual buffer first
-  // std::vector<VisMatrix> residual_data(n_visibilities);
-  // std::copy(&channel_block_data.Visibility(0),
-  //           &channel_block_data.Visibility(0) + n_visibilities,
-  //           residual_data.begin());
-
-  // print residual for debugging
-  // PrintVectorSummary(residual_data, "residual_pre_kernel");
-
-  // Copy to GPU device
-  // stream.memcpyHtoDAsync(device_residual, residual_data.data(),
-  //                        SizeOfResidual<VisMatrix>(n_visibilities));
-  // // Synchronize the streams to ensure the residual is ready
-  // stream.synchronize();
-
   // Subtract all directions with their current solutions
   // In-place: residual -> residual
   LaunchScalarSubtractKernel(stream, n_directions, n_visibilities, n_solutions, n_antennas, device_solution_map,
                              device_solutions, device_model, device_residual);
-
-  // // Copy result back from GPU and print for debugging
-  // stream.memcpyDtoHAsync(residual_data.data(), device_residual,
-  //                        SizeOfResidual<VisMatrix>(n_visibilities));
-  // stream.synchronize();
-  // // PrintVectorSummary(residual_data, "v_residual_post_kernel");
-
-  // // Copy result back from GPU and print for debugging
-  // stream.memcpyDtoHAsync(residual_data.data(), device_residual,
-  //                        SizeOfResidual<VisMatrix>(n_visibilities));
-  // stream.synchronize();
-  // // PrintVectorSummary(residual_data, "v_residual_post_kernel");
-  // // exit(0);
 
   for (size_t direction = 0; direction != n_directions; direction++) {
     // Be aware that we purposely still use the subtraction with 'old'
@@ -418,28 +390,30 @@ IterativeScalarSolverCuda<VisMatrix>::IterativeScalarSolverCuda(
 
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
-    const SolveData<VisMatrix>& data) {
+    const SolveData<VisMatrix>& data, size_t n_channel_blocks) {
   size_t max_n_direction_solutions = 0;
   size_t max_n_visibilities = 0;
   size_t max_n_directions = 0;
   std::tie(max_n_direction_solutions, max_n_visibilities, max_n_directions) =
       ComputeArrayDimensions(data);
 
+  sizes.numerator = SizeOfNumerator(NAntennas(), max_n_direction_solutions);
+
   gpu_buffers_.numerator = std::make_unique<cu::DeviceMemory>(
-      SizeOfNumerator(NAntennas(), max_n_direction_solutions));
+      SizeOfNumerator(NAntennas(), max_n_direction_solutions) * n_channel_blocks);
   gpu_buffers_.denominator = std::make_unique<cu::DeviceMemory>(
-      SizeOfDenominator(NAntennas(), max_n_direction_solutions));
+      SizeOfDenominator(NAntennas(), max_n_direction_solutions) * n_channel_blocks);
   // Allocating two buffers allows double buffering.
   for (size_t i = 0; i < 2; i++) {
     // gpu_buffers_.antenna_pairs.emplace_back(
     //     SizeOfAntennaPairs(max_n_visibilities));
     gpu_buffers_.solution_map.emplace_back(
-        SizeOfSolutionMap(max_n_directions, max_n_visibilities));
-    gpu_buffers_.solutions.emplace_back(SizeOfSolutions(NVisibilities()));
+        SizeOfSolutionMap(max_n_directions, max_n_visibilities) * n_channel_blocks);
+    gpu_buffers_.solutions.emplace_back(SizeOfSolutions(NVisibilities()) * n_channel_blocks);
     gpu_buffers_.next_solutions.emplace_back(
         SizeOfNextSolutions(NVisibilities()));
     gpu_buffers_.model.emplace_back(
-        SizeOfModel<VisMatrix>(max_n_directions, max_n_visibilities));
+        SizeOfModel<VisMatrix>(max_n_directions, max_n_visibilities) * n_channel_blocks);
   }
 
   // We need two buffers for residual like above to facilitate double-buffering,

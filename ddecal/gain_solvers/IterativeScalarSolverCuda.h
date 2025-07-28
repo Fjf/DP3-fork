@@ -29,9 +29,9 @@ class IterativeScalarSolverCuda final : public SolverBase {
   bool SupportsDdSolutionIntervals() const override { return true; }
 
  private:
-  void AllocateGPUBuffers(const SolveData<VisMatrix>& data);
+  void AllocateGPUBuffers(const SolveData<VisMatrix>& data, size_t n_channel_blocks);
   void DeallocateHostBuffers();
-  void AllocateHostBuffers(const SolveData<VisMatrix>& data);
+  void AllocateHostBuffers(const SolveData<VisMatrix>& data, size_t n_channel_blocks);
 
   void CopyHostToHost(size_t ch_block, bool first_iteration,
                       const SolveData<VisMatrix>& data,
@@ -64,6 +64,17 @@ class IterativeScalarSolverCuda final : public SolverBase {
   std::unique_ptr<cu::Stream> execute_stream_;
   std::unique_ptr<cu::Stream> host_to_device_stream_;
   std::unique_ptr<cu::Stream> device_to_host_stream_;
+
+  struct sizes {
+    size_t antenna_pairs;
+    size_t solution_map;
+    size_t solutions;
+    size_t next_solutions;
+    size_t model;
+    size_t residual;
+    size_t numerator;
+    size_t denominator;
+  } sizes;
 
   /**
    * GPUBuffers hold the GPU memory used in ::Solve()
