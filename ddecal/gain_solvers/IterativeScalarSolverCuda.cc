@@ -268,7 +268,7 @@ using ChannelBlockData =
     typename dp3::ddecal::SolveData<VisMatrix>::ChannelBlockData;
 
 template <typename VisMatrix>
-void SolveDirection(const ChannelBlockData<VisMatrix>& channel_block_data,
+void SolveDirection(const dp3::ddecal::SolveData<VisMatrix>& solve_data,
                     cu::Stream& stream, size_t n_antennas, size_t n_solutions,
                     size_t direction, cu::DeviceMemory& device_residual_in,
                     cu::DeviceMemory& device_residual_temp,
@@ -284,8 +284,8 @@ void SolveDirection(const ChannelBlockData<VisMatrix>& channel_block_data,
   // sol_a =  ----------------------------------------
   //             sum_b norm(model_ab * solutions_b)
   const size_t n_direction_solutions =
-      channel_block_data.NSolutionsForDirection(direction);
-  const size_t n_visibilities = channel_block_data.NVisibilities();
+      solve_data.ChannelBlock(0).NSolutionsForDirection(direction);
+  const size_t n_visibilities = solve_data.ChannelBlock(0).NVisibilities();
 
   // Initialize values to 0
   stream.zero(device_numerator,
@@ -298,11 +298,10 @@ void SolveDirection(const ChannelBlockData<VisMatrix>& channel_block_data,
                          SizeOfResidual<VisMatrix>(n_visibilities));
 
   LaunchScalarSolveDirectionKernel(
-      stream, n_visibilities, n_direction_solutions, n_solutions, n_antennas, direction,
-      device_solution_map, device_solutions, device_model,
+      stream, n_visibilities, n_direction_solutions, n_solutions, n_antennas,
+      direction, device_solution_map, device_solutions, device_model,
       device_residual_in, device_residual_temp, device_numerator,
       device_denominator);
-
 
   // Ensure the direction kernel completes before starting next solution kernel
   // stream.synchronize();
@@ -316,28 +315,29 @@ void SolveDirection(const ChannelBlockData<VisMatrix>& channel_block_data,
 template <typename VisMatrix>
 void PerformIteration(
     bool phase_only, double step_size,
-    const ChannelBlockData<VisMatrix>& channel_block_data, cu::Stream& stream,
+    const dp3::ddecal::SolveData<VisMatrix>& solve_data, cu::Stream& stream,
     size_t n_antennas, size_t n_solutions, size_t n_directions,
     cu::DeviceMemory& device_solution_map, cu::DeviceMemory& device_solutions,
     cu::DeviceMemory& device_next_solutions, cu::DeviceMemory& device_residual,
     cu::DeviceMemory& device_residual_temp, cu::DeviceMemory& device_model,
     cu::DeviceMemory& device_numerator, cu::DeviceMemory& device_denominator) {
-  const size_t n_visibilities = channel_block_data.NVisibilities();
+  const size_t n_visibilities = solve_data.ChannelBlock(0).NVisibilities();
 
   // Subtract all directions with their current solutions
   // In-place: residual -> residual
-  LaunchScalarSubtractKernel(stream, n_directions, n_visibilities, n_solutions, n_antennas, device_solution_map,
-                             device_solutions, device_model, device_residual);
+  LaunchScalarSubtractKernel(stream, n_directions, n_visibilities, n_solutions,
+                             n_antennas, device_solution_map, device_solutions,
+                             device_model, device_residual);
 
   for (size_t direction = 0; direction != n_directions; direction++) {
     // Be aware that we purposely still use the subtraction with 'old'
     // solutions, because the new solutions have not been constrained yet. Add
     // this direction back before solving
     SolveDirection<VisMatrix>(
-        channel_block_data, stream, n_antennas, n_solutions, direction,
+        solve_data, stream, n_antennas, n_solutions, direction,
         device_residual, device_residual_temp, device_solution_map,
-        device_solutions, device_model, device_next_solutions,
-        device_numerator, device_denominator);
+        device_solutions, device_model, device_next_solutions, device_numerator,
+        device_denominator);
   }
 
   LaunchStepKernel(stream, n_visibilities, device_solutions,
@@ -390,45 +390,29 @@ IterativeScalarSolverCuda<VisMatrix>::IterativeScalarSolverCuda(
 
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
-    const SolveData<VisMatrix>& data, size_t n_channel_blocks) {
-  size_t max_n_direction_solutions = 0;
-  size_t max_n_visibilities = 0;
-  size_t max_n_directions = 0;
-  std::tie(max_n_direction_solutions, max_n_visibilities, max_n_directions) =
-      ComputeArrayDimensions(data);
+    const SolveData<VisMatrix>& data) {
+  gpu_buffers_.numerator =
+      std::make_unique<cu::DeviceMemory>(sizes.numerator * n_channel_blocks);
+  gpu_buffers_.denominator =
+      std::make_unique<cu::DeviceMemory>(sizes.denominator * n_channel_blocks);
 
-  sizes.numerator = SizeOfNumerator(NAntennas(), max_n_direction_solutions);
-
-  gpu_buffers_.numerator = std::make_unique<cu::DeviceMemory>(
-      SizeOfNumerator(NAntennas(), max_n_direction_solutions) * n_channel_blocks);
-  gpu_buffers_.denominator = std::make_unique<cu::DeviceMemory>(
-      SizeOfDenominator(NAntennas(), max_n_direction_solutions) * n_channel_blocks);
   // Allocating two buffers allows double buffering.
   for (size_t i = 0; i < 2; i++) {
-    // gpu_buffers_.antenna_pairs.emplace_back(
-    //     SizeOfAntennaPairs(max_n_visibilities));
-    gpu_buffers_.solution_map.emplace_back(
-        SizeOfSolutionMap(max_n_directions, max_n_visibilities) * n_channel_blocks);
-    gpu_buffers_.solutions.emplace_back(SizeOfSolutions(NVisibilities()) * n_channel_blocks);
-    gpu_buffers_.next_solutions.emplace_back(
-        SizeOfNextSolutions(NVisibilities()));
-    gpu_buffers_.model.emplace_back(
-        SizeOfModel<VisMatrix>(max_n_directions, max_n_visibilities) * n_channel_blocks);
+    gpu_buffers_.solution_map.emplace_back(sizes.solution_map *
+                                           n_channel_blocks);
+    gpu_buffers_.solutions.emplace_back(sizes.solutions * n_channel_blocks);
+    gpu_buffers_.next_solutions.emplace_back(sizes.next_solutions);
+    gpu_buffers_.model.emplace_back(sizes.model * n_channel_blocks);
   }
 
   // We need two buffers for residual like above to facilitate double-buffering,
   // the third buffer is used for the per-direction add/subtract.
   for (size_t i = 0; i < 3; i++) {
-    gpu_buffers_.residual.emplace_back(
-        SizeOfResidual<VisMatrix>(max_n_visibilities));
+    gpu_buffers_.residual.emplace_back(sizes.residual);
   }
 
   try {
     // Verify that device memory allocations succeeded
-    // for (const auto& mem : gpu_buffers_.antenna_pairs) {
-    //   if (!mem)
-    //     throw std::runtime_error("antenna_pairs buffer allocation failed");
-    // }
     for (const auto& mem : gpu_buffers_.solution_map) {
       if (!mem)
         throw std::runtime_error("solution_map buffer allocation failed");
@@ -482,50 +466,36 @@ template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::AllocateHostBuffers(
     const SolveData<VisMatrix>& data) {
   // For scalar solver, we need one solution per antenna per polarization
-  const size_t total_solutions =
-      NAntennas() * NSubSolutions() * NSolutionPolarizations();
-  // std::cout << "DEBUG: Allocating host_buffers_.next_solutions" << std::endl;
-  // std::cout << "DEBUG: Total solutions: " << total_solutions << std::endl;
-  const size_t next_solutions_size = SizeOfNextSolutions(NVisibilities());
-  // std::cout << "DEBUG: Next solutions buffer size: " << next_solutions_size
-  // << " bytes" << std::endl;
+  size_t max_n_direction_solutions = 0;
+  size_t max_n_visibilities = 0;
+  size_t max_n_directions = 0;
+  std::tie(max_n_direction_solutions, max_n_visibilities, max_n_directions) =
+      ComputeArrayDimensions(data);
+
+  sizes.numerator = SizeOfNumerator(NAntennas(), max_n_direction_solutions);
+  sizes.denominator = SizeOfDenominator(NAntennas(), max_n_direction_solutions);
+  sizes.solution_map = SizeOfSolutionMap(max_n_directions, max_n_visibilities);
+
+  sizes.solutions = SizeOfSolutions(NVisibilities());
+  sizes.next_solutions = SizeOfNextSolutions(NVisibilities());
+  sizes.model = SizeOfModel<VisMatrix>(max_n_directions, max_n_visibilities);
+  sizes.residual = SizeOfResidual<VisMatrix>(max_n_visibilities);
 
   try {
-    host_buffers_.next_solutions =
-        std::make_unique<cu::HostMemory>(next_solutions_size);
-    // std::cout << "DEBUG: host_buffers_.next_solutions allocated successfully"
-    // << std::endl; std::cout << "DEBUG: Allocated pointer: " << std::hex <<
-    // static_cast<void*>(*host_buffers_.next_solutions) << std::dec <<
-    // std::endl;
+    host_buffers_.next_solutions = std::make_unique<cu::HostMemory>(
+        sizes.next_solutions * n_channel_blocks);
   } catch (const std::exception& e) {
     std::cerr << "ERROR allocating host_buffers_.next_solutions: " << e.what()
               << std::endl;
     throw;
   }
-  for (size_t ch_block = 0; ch_block < NChannelBlocks(); ch_block++) {
-    const ChannelBlockData<VisMatrix>& channel_block_data =
-        data.ChannelBlock(ch_block);
-    const size_t n_directions = channel_block_data.NDirections();
-    const size_t n_visibilities = channel_block_data.NVisibilities();
-    host_buffers_.model.emplace_back(
-        SizeOfModel<VisMatrix>(n_directions, n_visibilities));
-    host_buffers_.residual.emplace_back(
-        SizeOfResidual<VisMatrix>(n_visibilities));
-    host_buffers_.solutions.emplace_back(SizeOfSolutions(NVisibilities()));
-    // host_buffers_.antenna_pairs.emplace_back(
-    //     SizeOfAntennaPairs(n_visibilities));
-    host_buffers_.solution_map.emplace_back(
-        SizeOfSolutionMap(n_directions, n_visibilities));
-
-    // uint32_t* antenna_pairs =
-    //     static_cast<uint32_t*>(host_buffers_.antenna_pairs[ch_block]);
-    // for (size_t visibility_index = 0; visibility_index < n_visibilities;
-    //      visibility_index++) {
-    //   antenna_pairs[visibility_index * 2 + 0] =
-          // channel_block_data.Antenna1Index(visibility_index);
-    //   antenna_pairs[visibility_index * 2 + 1] =
-    //       channel_block_data.Antenna2Index(visibility_index);
-    // }
+  for (size_t ch_block = 0; ch_block < NChannelBlocks();
+       ch_block += n_channel_blocks) {
+    host_buffers_.model.emplace_back(sizes.model * n_channel_blocks);
+    host_buffers_.residual.emplace_back(sizes.residual * n_channel_blocks);
+    host_buffers_.solutions.emplace_back(sizes.solutions * n_channel_blocks);
+    host_buffers_.solution_map.emplace_back(sizes.solution_map *
+                                            n_channel_blocks);
   }
 }
 
@@ -540,28 +510,34 @@ void IterativeScalarSolverCuda<VisMatrix>::DeallocateHostBuffers() {
 }
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::CopyHostToHost(
-    size_t ch_block, bool first_iteration, const SolveData<VisMatrix>& data,
-    const std::vector<std::complex<double>>& solutions, cu::Stream& stream) {
-  const ChannelBlockData<VisMatrix>& channel_block_data =
-      data.ChannelBlock(ch_block);
-  const size_t n_directions = channel_block_data.NDirections();
-  const size_t n_visibilities = channel_block_data.NVisibilities();
+    size_t ch_block_id, bool first_iteration, const SolveData<VisMatrix>& data,
+    const std::vector<std::vector<DComplex>>& solutions, cu::Stream& stream) {
+  for (size_t ch_block = ch_block_id * n_channel_blocks;
+       ch_block <
+       std::min((ch_block_id + 1) * n_channel_blocks, NChannelBlocks());
+       ch_block++) {
+    const ChannelBlockData<VisMatrix>& channel_block_data =
+        data.ChannelBlock(ch_block);
+    const size_t n_directions = channel_block_data.NDirections();
+    const size_t n_visibilities = channel_block_data.NVisibilities();
 
-  cu::HostMemory& host_model = host_buffers_.model[ch_block];
-  cu::HostMemory& host_solutions = host_buffers_.solutions[ch_block];
+    cu::HostMemory& host_model = host_buffers_.model[ch_block];
+    cu::HostMemory& host_solutions = host_buffers_.solutions[ch_block];
 
-  stream.memcpyHtoHAsync(host_model, &channel_block_data.ModelVisibility(0, 0),
-                         SizeOfModel<VisMatrix>(n_directions, n_visibilities));
-  stream.memcpyHtoHAsync(host_solutions, solutions.data(),
-                         SizeOfSolutions(NVisibilities()));
-  if (first_iteration) {
-    cu::HostMemory& host_residual = host_buffers_.residual[ch_block];
-    cu::HostMemory& host_solution_map = host_buffers_.solution_map[ch_block];
-    stream.memcpyHtoHAsync(host_residual, &channel_block_data.Visibility(0),
-                           SizeOfResidual<VisMatrix>(n_visibilities));
-    stream.memcpyHtoHAsync(host_solution_map,
-                           channel_block_data.SolutionMapData(),
-                           SizeOfSolutionMap(n_directions, n_visibilities));
+    stream.memcpyHtoHAsync(
+        host_model, &channel_block_data.ModelVisibility(0, 0),
+        SizeOfModel<VisMatrix>(n_directions, n_visibilities));
+    stream.memcpyHtoHAsync(host_solutions, solutions[ch_block].data(),
+                           SizeOfSolutions(NVisibilities()));
+    if (first_iteration) {
+      cu::HostMemory& host_residual = host_buffers_.residual[ch_block];
+      cu::HostMemory& host_solution_map = host_buffers_.solution_map[ch_block];
+      stream.memcpyHtoHAsync(host_residual, &channel_block_data.Visibility(0),
+                             SizeOfResidual<VisMatrix>(n_visibilities));
+      stream.memcpyHtoHAsync(host_solution_map,
+                             channel_block_data.SolutionMapData(),
+                             SizeOfSolutionMap(n_directions, n_visibilities));
+    }
   }
 }
 
@@ -569,36 +545,25 @@ template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
     size_t ch_block, size_t buffer_id, cu::Stream& stream, cu::Event& event,
     const SolveData<VisMatrix>& data) {
-  const ChannelBlockData<VisMatrix>& channel_block_data =
-      data.ChannelBlock(ch_block);
-
-  const size_t n_directions = channel_block_data.NDirections();
-  const size_t n_visibilities = channel_block_data.NVisibilities();
-
   cu::HostMemory& host_solution_map = host_buffers_.solution_map[ch_block];
-  // cu::HostMemory& host_antenna_pairs = host_buffers_.antenna_pairs[ch_block];
   cu::HostMemory& host_model = host_buffers_.model[ch_block];
   cu::HostMemory& host_residual = host_buffers_.residual[ch_block];
   cu::HostMemory& host_solutions = host_buffers_.solutions[ch_block];
 
   cu::DeviceMemory& device_solution_map = gpu_buffers_.solution_map[buffer_id];
-  // cu::DeviceMemory& device_antenna_pairs =
-  //     gpu_buffers_.antenna_pairs[buffer_id];
   cu::DeviceMemory& device_model = gpu_buffers_.model[buffer_id];
   cu::DeviceMemory& device_residual = gpu_buffers_.residual[buffer_id];
   cu::DeviceMemory& device_solutions = gpu_buffers_.solutions[buffer_id];
 
   stream.memcpyHtoDAsync(device_solution_map, host_solution_map,
-                         SizeOfSolutionMap(n_directions, n_visibilities));
+                         sizes.solution_map * n_channel_blocks);
   stream.memcpyHtoDAsync(device_model, host_model,
-                         SizeOfModel<VisMatrix>(n_directions, n_visibilities));
+                         sizes.model * n_channel_blocks);
   stream.memcpyHtoDAsync(device_residual, host_residual,
-                         SizeOfResidual<VisMatrix>(n_visibilities));
-  // stream.memcpyHtoDAsync(device_antenna_pairs, host_antenna_pairs,
-  //                        SizeOfAntennaPairs(n_visibilities));
+                         sizes.residual * n_channel_blocks);
 
   stream.memcpyHtoDAsync(device_solutions, host_solutions,
-                         SizeOfSolutions(NVisibilities()));
+                         sizes.solutions * n_channel_blocks);
 }
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::PostProcessing(
@@ -630,6 +595,9 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
     std::vector<std::vector<DComplex>>& solutions, double time,
     std::ostream* stat_stream) {
   try {
+    n_channel_blocks = 1;  // N parallel channel blocks we can fit in a
+    // double-buffer memory layout
+
     PrepareConstraints();
     context_->setCurrent();
 
@@ -756,12 +724,14 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
       throw std::runtime_error(oss.str());
     }
 
+    size_t n_ch_block_ids =
+        ((NChannelBlocks() + (n_channel_blocks - 1)) / n_channel_blocks);
     /*
      * Allocate events for each channel block
      */
-    std::vector<cu::Event> input_copied_events(NChannelBlocks());
-    std::vector<cu::Event> compute_finished_events(NChannelBlocks());
-    std::vector<cu::Event> output_copied_events(NChannelBlocks());
+    std::vector<cu::Event> input_copied_events(n_ch_block_ids);
+    std::vector<cu::Event> compute_finished_events(n_ch_block_ids);
+    std::vector<cu::Event> output_copied_events(n_ch_block_ids);
 
     /*
      * Start iterating
@@ -779,40 +749,41 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
 
       nvtxRangeId_t nvts_range_gpu = nvtxRangeStart("GPU");
 
-      for (size_t ch_block = 0; ch_block < NChannelBlocks(); ch_block++) {
-        const ChannelBlockData<VisMatrix>& channel_block_data =
-            data.ChannelBlock(ch_block);
+      for (size_t ch_block_id = 0; ch_block_id < n_ch_block_ids;
+           ch_block_id++) {
 
-        const size_t buffer_id = ch_block % 2;
+
+        const size_t buffer_id = ch_block_id % 2;
 
         // Copy input data for first channel block
-        if (ch_block == 0) {
-          CopyHostToHost(ch_block, iteration == 0, data, solutions[ch_block],
+        if (ch_block_id == 0) {
+          CopyHostToHost(ch_block_id, iteration == 0, data, solutions,
                          *host_to_device_stream_);
-          CopyHostToDevice(ch_block, buffer_id, *host_to_device_stream_,
-                           input_copied_events[ch_block], data);
-          host_to_device_stream_->record(input_copied_events[ch_block]);
+          CopyHostToDevice(ch_block_id, buffer_id, *host_to_device_stream_,
+                           input_copied_events[ch_block_id], data);
+          host_to_device_stream_->record(input_copied_events[ch_block_id]);
         }
 
-        if (ch_block < NChannelBlocks() - 1) {
-          CopyHostToHost(ch_block + 1, iteration == 0, data,
-                         solutions[ch_block + 1], *host_to_device_stream_);
-          if (ch_block > 1) {
-            host_to_device_stream_->wait(compute_finished_events[ch_block - 2]);
+        if (ch_block_id < n_ch_block_ids - 1) {
+          CopyHostToHost(ch_block_id + 1, iteration == 0, data, solutions,
+                         *host_to_device_stream_);
+          if (ch_block_id > 1) {
+            host_to_device_stream_->wait(
+                compute_finished_events[ch_block_id - 2]);
           }
-          CopyHostToDevice(ch_block + 1, (ch_block + 1) % 2,
+          CopyHostToDevice(ch_block_id + 1, (ch_block_id + 1) % 2,
                            *host_to_device_stream_,
-                           input_copied_events[ch_block + 1], data);
-          host_to_device_stream_->record(input_copied_events[ch_block + 1]);
+                           input_copied_events[ch_block_id + 1], data);
+          host_to_device_stream_->record(input_copied_events[ch_block_id + 1]);
         }
 
-        execute_stream_->wait(input_copied_events[ch_block]);
-        if (ch_block > 1) {
-          execute_stream_->wait(output_copied_events[ch_block - 2]);
+        execute_stream_->wait(input_copied_events[ch_block_id]);
+        if (ch_block_id > 1) {
+          execute_stream_->wait(output_copied_events[ch_block_id - 2]);
         }
 
         PerformIteration<VisMatrix>(
-            phase_only, step_size, channel_block_data, *execute_stream_,
+            phase_only, step_size, data, *execute_stream_,
             NAntennas(), NSubSolutions(), NDirections(),
             gpu_buffers_.solution_map[buffer_id],
             gpu_buffers_.solutions[buffer_id],
@@ -821,22 +792,26 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
             gpu_buffers_.model[buffer_id], *gpu_buffers_.numerator,
             *gpu_buffers_.denominator);
 
-        execute_stream_->record(compute_finished_events[ch_block]);
+        execute_stream_->record(compute_finished_events[ch_block_id]);
         // Wait for the computation to finish
-        device_to_host_stream_->wait(compute_finished_events[ch_block]);
-
+        device_to_host_stream_->wait(compute_finished_events[ch_block_id]);
 
         // Copy next solutions back to host
         const size_t n_visibilities = next_solutions.shape(1) *
                                       next_solutions.shape(2) *
                                       next_solutions.shape(3);
-        device_to_host_stream_->memcpyDtoHAsync(
-            &next_solutions(ch_block, 0, 0, 0),
-            gpu_buffers_.next_solutions[buffer_id],
-            SizeOfNextSolutions(n_visibilities));
 
+        for (size_t ch_block = ch_block_id * n_channel_blocks;
+             ch_block <
+             std::min((ch_block_id + 1) * n_channel_blocks, NChannelBlocks());
+             ch_block++) {
+          device_to_host_stream_->memcpyDtoHAsync(
+              &next_solutions(ch_block, 0, 0, 0),
+              gpu_buffers_.next_solutions[buffer_id],
+              SizeOfNextSolutions(n_visibilities));
+        }
         // Record that the output is copied
-        device_to_host_stream_->record(output_copied_events[ch_block]);
+        device_to_host_stream_->record(output_copied_events[ch_block_id]);
       }  // end for ch_block
 
       // Wait for next solutions to be copied
