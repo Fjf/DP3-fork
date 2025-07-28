@@ -357,11 +357,19 @@ void PerformIteration(
     // Be aware that we purposely still use the subtraction with 'old'
     // solutions, because the new solutions have not been constrained yet. Add
     // this direction back before solving
+<<<<<<< HEAD
     SolveDirection<VisMatrix>(
         solve_data, stream, n_antennas, n_solutions, n_channel_blocks, direction,
         device_residual, device_residual_temp, device_solution_map,
         device_solutions, device_model, device_next_solutions, device_numerator,
         device_denominator);
+=======
+    SolveDirection<VisMatrix>(solve_data, stream, n_antennas, n_solutions,
+                              direction, device_residual, device_residual_temp,
+                              device_solution_map, device_solutions,
+                              device_model, device_next_solutions,
+                              device_numerator, device_denominator);
+>>>>>>> 5beb93fecc9c093f25a46f8df736adc474bccbd1
   }
 
   LaunchStepKernel(stream, n_visibilities, device_solutions,
@@ -422,8 +430,7 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
 
   // Allocating two buffers allows double buffering.
   for (size_t i = 0; i < 2; i++) {
-    gpu_buffers_.solution_map.emplace_back(sizes.solution_map *
-                                           chunk_size);
+    gpu_buffers_.solution_map.emplace_back(sizes.solution_map * chunk_size);
     gpu_buffers_.solutions.emplace_back(sizes.solutions * chunk_size);
     gpu_buffers_.next_solutions.emplace_back(sizes.next_solutions * chunk_size);
     gpu_buffers_.model.emplace_back(sizes.model * chunk_size);
@@ -489,6 +496,7 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::AllocateHostBuffers(
     const SolveData<VisMatrix>& data) {
+  // std::cout << "Allocaitng host buffers" << std::endl;
   // For scalar solver, we need one solution per antenna per polarization
   size_t max_n_direction_solutions = 0;
   size_t max_n_visibilities = 0;
@@ -506,21 +514,26 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateHostBuffers(
   sizes.residual = SizeOfResidual<VisMatrix>(max_n_visibilities);
 
   try {
-    host_buffers_.next_solutions = std::make_unique<cu::HostMemory>(
-        sizes.next_solutions * chunk_size);
+    host_buffers_.next_solutions =
+        std::make_unique<cu::HostMemory>(sizes.next_solutions * chunk_size);
   } catch (const std::exception& e) {
     std::cerr << "ERROR allocating host_buffers_.next_solutions: " << e.what()
               << std::endl;
     throw;
   }
-  for (size_t ch_block = 0; ch_block < NChannelBlocks();
+  for (size_t ch_block = 0; (ch_block + chunk_size - 1) < NChannelBlocks();
        ch_block += chunk_size) {
     host_buffers_.model.emplace_back(sizes.model * chunk_size);
     host_buffers_.residual.emplace_back(sizes.residual * chunk_size);
     host_buffers_.solutions.emplace_back(sizes.solutions * chunk_size);
-    host_buffers_.solution_map.emplace_back(sizes.solution_map *
-                                            chunk_size);
+    host_buffers_.solution_map.emplace_back(sizes.solution_map * chunk_size);
   }
+  // std::cout << "Allocated " << host_buffers_.model.size() << " models.. for " << NChannelBlocks()  << std::endl;
+  // for (size_t model_id = 0; model_id < host_buffers_.model.size(); model_id++) {
+  //   void* ptr = host_buffers_.model[model_id];
+  //   std::cout << "@" << ptr << std::endl;
+  // }
+  // std::cout << "Done allocaitng host buffers" << std::endl;
 }
 
 template <typename VisMatrix>
@@ -536,58 +549,77 @@ template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::CopyHostToHost(
     size_t chunk_id, bool first_iteration, const SolveData<VisMatrix>& data,
     const std::vector<std::vector<DComplex>>& solutions, cu::Stream& stream) {
+  // std::cout << "Copyhing host to host" << std::endl;
   for (size_t ch_block = chunk_id * chunk_size;
-       ch_block <
-       std::min((chunk_id + 1) * chunk_size, NChannelBlocks());
+       ch_block < std::min((chunk_id + 1) * chunk_size, NChannelBlocks());
        ch_block++) {
+
     const ChannelBlockData<VisMatrix>& channel_block_data =
         data.ChannelBlock(ch_block);
-    const size_t n_directions = channel_block_data.NDirections();
-    const size_t n_visibilities = channel_block_data.NVisibilities();
-
-    cu::HostMemory& host_model = host_buffers_.model[ch_block];
-    cu::HostMemory& host_solutions = host_buffers_.solutions[ch_block];
-
-    stream.memcpyHtoHAsync(
-        host_model, &channel_block_data.ModelVisibility(0, 0),
-        SizeOfModel<VisMatrix>(n_directions, n_visibilities));
-    stream.memcpyHtoHAsync(host_solutions, solutions[ch_block].data(),
-                           SizeOfSolutions(NVisibilities()));
+    void* host_model = host_buffers_.model[chunk_id];
+    void* host_solutions = host_buffers_.solutions[chunk_id];
+    // std::cout << "Copying host to host "
+    //               << sizes.model << " to "
+    //               << host_model + sizes.model * (ch_block % chunk_size)
+    //               << std::endl;
+    stream.memcpyHtoHAsync(host_model + sizes.model * (ch_block % chunk_size),
+                           &channel_block_data.ModelVisibility(0, 0),
+                           sizes.model);
+    // std::cout << "Copying host to host from "
+    //           << sizes.solutions << " to "
+    //           << host_solutions + sizes.solutions * (ch_block % chunk_size)
+    //           << std::endl;
+    stream.memcpyHtoHAsync(host_solutions + sizes.solutions * (ch_block % chunk_size),
+                           solutions[ch_block].data(), sizes.solutions);
     if (first_iteration) {
-      cu::HostMemory& host_residual = host_buffers_.residual[ch_block];
-      cu::HostMemory& host_solution_map = host_buffers_.solution_map[ch_block];
-      stream.memcpyHtoHAsync(host_residual, &channel_block_data.Visibility(0),
-                             SizeOfResidual<VisMatrix>(n_visibilities));
-      stream.memcpyHtoHAsync(host_solution_map,
+      void* host_residual = host_buffers_.residual[chunk_id];
+      void* host_solution_map = host_buffers_.solution_map[chunk_id];
+      // std::cout << "Residual copying host to host: "
+      //     << sizes.residual << " to "
+      //     << host_residual + sizes.residual * (ch_block % chunk_size)
+      //     << std::endl;
+      stream.memcpyHtoHAsync(host_residual + sizes.residual * (ch_block % chunk_size),
+                             &channel_block_data.Visibility(0), sizes.residual);
+      stream.memcpyHtoHAsync(host_solution_map + sizes.solution_map * (ch_block % chunk_size),
                              channel_block_data.SolutionMapData(),
-                             SizeOfSolutionMap(n_directions, n_visibilities));
+                             sizes.solution_map);
     }
   }
+  // std::cout << "Done Copyhing host to host" << std::endl;
 }
 
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
-    size_t ch_block, size_t buffer_id, cu::Stream& stream, cu::Event& event,
+    size_t chunk_id, size_t buffer_id, cu::Stream& stream, cu::Event& event,
     const SolveData<VisMatrix>& data) {
-  cu::HostMemory& host_solution_map = host_buffers_.solution_map[ch_block];
-  cu::HostMemory& host_model = host_buffers_.model[ch_block];
-  cu::HostMemory& host_residual = host_buffers_.residual[ch_block];
-  cu::HostMemory& host_solutions = host_buffers_.solutions[ch_block];
+  // std::cout << "Copyhing host to dev" << std::endl;
+  cu::HostMemory& host_solution_map = host_buffers_.solution_map[chunk_id];
+  cu::HostMemory& host_model = host_buffers_.model[chunk_id];
+  cu::HostMemory& host_residual = host_buffers_.residual[chunk_id];
+  cu::HostMemory& host_solutions = host_buffers_.solutions[chunk_id];
 
   cu::DeviceMemory& device_solution_map = gpu_buffers_.solution_map[buffer_id];
   cu::DeviceMemory& device_model = gpu_buffers_.model[buffer_id];
   cu::DeviceMemory& device_residual = gpu_buffers_.residual[buffer_id];
   cu::DeviceMemory& device_solutions = gpu_buffers_.solutions[buffer_id];
 
+  // std::cout << " Copying " << sizes.solution_map * chunk_size << std::endl;
+
   stream.memcpyHtoDAsync(device_solution_map, host_solution_map,
                          sizes.solution_map * chunk_size);
-  stream.memcpyHtoDAsync(device_model, host_model,
-                         sizes.model * chunk_size);
+
+  // std::cout << " Copying " << sizes.model * chunk_size << std::endl;
+  stream.memcpyHtoDAsync(device_model, host_model, sizes.model * chunk_size);
+
+  void* host_residual_ptr = host_residual;
+  // std::cout << " Copying " << sizes.residual * chunk_size << " @" << host_residual_ptr << std::endl;
   stream.memcpyHtoDAsync(device_residual, host_residual,
                          sizes.residual * chunk_size);
-
+  // std::cout << " Copying " << sizes.solutions * chunk_size << std::endl;
   stream.memcpyHtoDAsync(device_solutions, host_solutions,
                          sizes.solutions * chunk_size);
+
+  // std::cout << "done copyhing host to dev" << std::endl;
 }
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::PostProcessing(
@@ -748,8 +780,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
       throw std::runtime_error(oss.str());
     }
 
-    size_t n_chunk_ids =
-        ((NChannelBlocks() + (chunk_size - 1)) / chunk_size);
+    size_t n_chunk_ids = ((NChannelBlocks() + (chunk_size - 1)) / chunk_size);
     /*
      * Allocate events for each channel block
      */
@@ -773,10 +804,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
 
       nvtxRangeId_t nvts_range_gpu = nvtxRangeStart("GPU");
 
-      for (size_t chunk_id = 0; chunk_id < n_chunk_ids;
-           chunk_id++) {
-
-
+      for (size_t chunk_id = 0; chunk_id < n_chunk_ids; chunk_id++) {
         const size_t buffer_id = chunk_id % 2;
 
         // Copy input data for first channel block
@@ -792,8 +820,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
           CopyHostToHost(chunk_id + 1, iteration == 0, data, solutions,
                          *host_to_device_stream_);
           if (chunk_id > 1) {
-            host_to_device_stream_->wait(
-                compute_finished_events[chunk_id - 2]);
+            host_to_device_stream_->wait(compute_finished_events[chunk_id - 2]);
           }
           CopyHostToDevice(chunk_id + 1, (chunk_id + 1) % 2,
                            *host_to_device_stream_,
@@ -807,8 +834,13 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
         }
 
         PerformIteration<VisMatrix>(
+<<<<<<< HEAD
             phase_only, step_size, data, *execute_stream_,
             NAntennas(), NSubSolutions(), NDirections(), chunk_size,
+=======
+            phase_only, step_size, data, *execute_stream_, NAntennas(),
+            NSubSolutions(), NDirections(),
+>>>>>>> 5beb93fecc9c093f25a46f8df736adc474bccbd1
             gpu_buffers_.solution_map[buffer_id],
             gpu_buffers_.solutions[buffer_id],
             gpu_buffers_.next_solutions[buffer_id],
@@ -826,8 +858,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
                                       next_solutions.shape(3);
 
         for (size_t ch_block = chunk_id * chunk_size;
-             ch_block <
-             std::min((chunk_id + 1) * chunk_size, NChannelBlocks());
+             ch_block < std::min((chunk_id + 1) * chunk_size, NChannelBlocks());
              ch_block++) {
           device_to_host_stream_->memcpyDtoHAsync(
               &next_solutions(ch_block, 0, 0, 0),
