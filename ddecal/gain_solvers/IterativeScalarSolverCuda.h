@@ -33,7 +33,7 @@ class IterativeScalarSolverCuda final : public SolverBase {
   void DeallocateHostBuffers();
   void AllocateHostBuffers(const SolveData<VisMatrix>& data);
 
-  void CopyHostToHost(size_t ch_block_id, bool first_iteration,
+  void CopyHostToHost(size_t chunk_id, bool first_iteration,
                       const SolveData<VisMatrix>& data,
                       const std::vector<std::vector<DComplex>>& solutions,
                       cu::Stream& stream);
@@ -75,7 +75,7 @@ class IterativeScalarSolverCuda final : public SolverBase {
     size_t numerator;
     size_t denominator;
   } sizes;
-  size_t n_channel_blocks;
+  size_t chunk_size;
 
   /**
    * GPUBuffers hold the GPU memory used in ::Solve()
