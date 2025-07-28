@@ -269,7 +269,7 @@ using ChannelBlockData =
 
 template <typename VisMatrix>
 void SolveDirection(const dp3::ddecal::SolveData<VisMatrix>& solve_data,
-                    cu::Stream& stream, size_t n_antennas, size_t n_solutions,
+                    cu::Stream& stream, size_t n_antennas, size_t n_solutions, size_t n_channel_blocks,
                     size_t direction, cu::DeviceMemory& device_residual_in,
                     cu::DeviceMemory& device_residual_temp,
                     cu::DeviceMemory& device_solution_map,
@@ -278,6 +278,18 @@ void SolveDirection(const dp3::ddecal::SolveData<VisMatrix>& solve_data,
                     cu::DeviceMemory& device_next_solutions,
                     cu::DeviceMemory& device_numerator,
                     cu::DeviceMemory& device_denominator) {
+
+  struct sizes sizes = {
+    SizeOfSolutionMap(solve_data.ChannelBlock(0).NDirections(),
+                      solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfSolutions(solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfNextSolutions(solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfModel<VisMatrix>(solve_data.ChannelBlock(0).NDirections(),
+                           solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfResidual<VisMatrix>(solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfNumerator(n_antennas, solve_data.ChannelBlock(0).NSolutionsForDirection(direction)),
+    SizeOfDenominator(n_antennas, solve_data.ChannelBlock(0).NSolutionsForDirection(direction))
+  };
   // Calculate this equation, given ant a:
   //
   //          sum_b data_ab * solutions_b * model_ab^*
@@ -298,16 +310,16 @@ void SolveDirection(const dp3::ddecal::SolveData<VisMatrix>& solve_data,
                          SizeOfResidual<VisMatrix>(n_visibilities));
 
   LaunchScalarSolveDirectionKernel(
-      stream, n_visibilities, n_direction_solutions, n_solutions, n_antennas,
+      stream, n_visibilities, n_direction_solutions, n_solutions, n_antennas, n_channel_blocks,
       direction, device_solution_map, device_solutions, device_model,
       device_residual_in, device_residual_temp, device_numerator,
-      device_denominator);
+      device_denominator, sizes);
 
   // Ensure the direction kernel completes before starting next solution kernel
   // stream.synchronize();
 
   LaunchScalarSolveNextSolutionKernel(
-      stream, n_antennas, n_visibilities, n_direction_solutions, n_solutions,
+      stream, n_antennas, n_visibilities, n_direction_solutions, n_solutions, n_channel_blocks,
       direction, device_solution_map, device_next_solutions, device_numerator,
       device_denominator);
 }
@@ -316,7 +328,7 @@ template <typename VisMatrix>
 void PerformIteration(
     bool phase_only, double step_size,
     const dp3::ddecal::SolveData<VisMatrix>& solve_data, cu::Stream& stream,
-    size_t n_antennas, size_t n_solutions, size_t n_directions,
+    size_t n_antennas, size_t n_solutions, size_t n_directions, size_t n_channel_blocks,
     cu::DeviceMemory& device_solution_map, cu::DeviceMemory& device_solutions,
     cu::DeviceMemory& device_next_solutions, cu::DeviceMemory& device_residual,
     cu::DeviceMemory& device_residual_temp, cu::DeviceMemory& device_model,
@@ -325,16 +337,28 @@ void PerformIteration(
 
   // Subtract all directions with their current solutions
   // In-place: residual -> residual
+
+  struct sizes sizes = {
+    SizeOfSolutionMap(solve_data.ChannelBlock(0).NDirections(),
+                      solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfSolutions(solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfNextSolutions(solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfModel<VisMatrix>(solve_data.ChannelBlock(0).NDirections(),
+                           solve_data.ChannelBlock(0).NVisibilities()),
+    SizeOfResidual<VisMatrix>(solve_data.ChannelBlock(0).NVisibilities()),
+    0,
+    0
+  };
   LaunchScalarSubtractKernel(stream, n_directions, n_visibilities, n_solutions,
-                             n_antennas, device_solution_map, device_solutions,
-                             device_model, device_residual);
+                             n_antennas, n_channel_blocks, device_solution_map, device_solutions,
+                             device_model, device_residual, sizes);
 
   for (size_t direction = 0; direction != n_directions; direction++) {
     // Be aware that we purposely still use the subtraction with 'old'
     // solutions, because the new solutions have not been constrained yet. Add
     // this direction back before solving
     SolveDirection<VisMatrix>(
-        solve_data, stream, n_antennas, n_solutions, direction,
+        solve_data, stream, n_antennas, n_solutions, n_channel_blocks, direction,
         device_residual, device_residual_temp, device_solution_map,
         device_solutions, device_model, device_next_solutions, device_numerator,
         device_denominator);
@@ -401,14 +425,14 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
     gpu_buffers_.solution_map.emplace_back(sizes.solution_map *
                                            chunk_size);
     gpu_buffers_.solutions.emplace_back(sizes.solutions * chunk_size);
-    gpu_buffers_.next_solutions.emplace_back(sizes.next_solutions);
+    gpu_buffers_.next_solutions.emplace_back(sizes.next_solutions * chunk_size);
     gpu_buffers_.model.emplace_back(sizes.model * chunk_size);
   }
 
   // We need two buffers for residual like above to facilitate double-buffering,
   // the third buffer is used for the per-direction add/subtract.
   for (size_t i = 0; i < 3; i++) {
-    gpu_buffers_.residual.emplace_back(sizes.residual);
+    gpu_buffers_.residual.emplace_back(sizes.residual * chunk_size);
   }
 
   try {
@@ -595,7 +619,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
     std::vector<std::vector<DComplex>>& solutions, double time,
     std::ostream* stat_stream) {
   try {
-    chunk_size = 1;  // N parallel channel blocks we can fit in a
+    chunk_size = 2;  // N parallel channel blocks we can fit in a
     // double-buffer memory layout
 
     PrepareConstraints();
@@ -784,7 +808,7 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
 
         PerformIteration<VisMatrix>(
             phase_only, step_size, data, *execute_stream_,
-            NAntennas(), NSubSolutions(), NDirections(),
+            NAntennas(), NSubSolutions(), NDirections(), chunk_size,
             gpu_buffers_.solution_map[buffer_id],
             gpu_buffers_.solutions[buffer_id],
             gpu_buffers_.next_solutions[buffer_id],

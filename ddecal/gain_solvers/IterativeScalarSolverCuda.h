@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <cudawrappers/cu.hpp>
+#include "kernels/IterativeScalar.h"
 
 #include "IterativeScalarSolver.h"
 #include "SolverBase.h"
@@ -65,16 +66,8 @@ class IterativeScalarSolverCuda final : public SolverBase {
   std::unique_ptr<cu::Stream> host_to_device_stream_;
   std::unique_ptr<cu::Stream> device_to_host_stream_;
 
-  struct sizes {
-    size_t antenna_pairs;
-    size_t solution_map;
-    size_t solutions;
-    size_t next_solutions;
-    size_t model;
-    size_t residual;
-    size_t numerator;
-    size_t denominator;
-  } sizes;
+ 
+  struct sizes sizes;
   size_t chunk_size;
 
   /**

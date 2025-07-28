@@ -12,7 +12,7 @@
 
 #include <iostream>
 
-#define BLOCK_SIZE 128
+#define BLOCK_SIZE 1
 
 #define cudaCheckError() {                                      \
  cudaError_t e=cudaGetLastError();                                 \
@@ -54,7 +54,7 @@ __device__ void AddOrSubtractScalar(size_t vis_index, size_t n_solutions, size_t
   }
 }
 
-__device__ void SolveScalarDirection(size_t vis_index, size_t n_visibilities,
+__device__ void SolveScalarDirection(size_t ch_block, size_t vis_index, size_t n_visibilities,
                                size_t n_direction_solutions, size_t n_solutions, size_t n_antenna,
                                const unsigned int* solution_map,
                                const cuDoubleComplex* solutions,
@@ -134,42 +134,57 @@ __global__ void SolveScalarDirectionKernel(
     size_t n_visibilities, size_t n_direction_solutions, size_t n_solutions, size_t n_antenna,
     const unsigned int* solution_map, const cuDoubleComplex* solutions, const cuFloatComplex* model,
     const cuFloatComplex* residual_in, cuFloatComplex* residual_temp,
-    cuFloatComplex* numerator, float* denominator) {
-  const size_t vis_index = blockIdx.x * blockDim.x + threadIdx.x;
+    cuFloatComplex* numerator, float* denominator, struct sizes sizes) {
+  const size_t vis_index = blockIdx.y * blockDim.x + threadIdx.x;
+  const size_t ch_block = blockIdx.x;
+
+  // printf("sizes: %lu %lu %lu %lu vis_index: %lu, channel_block: %lu\n", 
+  //       (unsigned long) sizes.solution_map, (unsigned long) sizes.solutions, 
+  //       (unsigned long) sizes.next_solutions, (unsigned long) sizes.model, 
+  //       (unsigned long) vis_index, (unsigned long) ch_block);
 
   if (vis_index >= n_visibilities) {
     return;
   }
 
+  // Calculate offsets for this channel block (don't modify the original pointers)
+  const size_t residual_offset = ch_block * sizes.residual / sizeof(cuFloatComplex);
+  const size_t solutions_offset = ch_block * sizes.solutions / sizeof(cuDoubleComplex);
+  const size_t model_offset = ch_block * sizes.model / sizeof(cuFloatComplex);
+
   // Use the direction-specific pointers (solution_map and model are already offset for the current direction)
   AddOrSubtractScalar<true>(vis_index, n_solutions, n_antenna, solution_map,
-                      solutions, model, residual_in, residual_temp);
-  SolveScalarDirection(vis_index, n_visibilities, n_direction_solutions, n_solutions, n_antenna,
-                solution_map, solutions, model, residual_temp,
+                      solutions + solutions_offset, model + model_offset, residual_in + residual_offset, residual_temp + residual_offset);
+  SolveScalarDirection(ch_block, vis_index, n_visibilities, n_direction_solutions, n_solutions, n_antenna,
+                solution_map, solutions + solutions_offset, model + model_offset, residual_temp,
                  numerator, denominator);
+
 }
 
 void LaunchScalarSolveDirectionKernel(
     cudaStream_t stream, size_t n_visibilities, size_t n_direction_solutions,
-    size_t n_solutions, size_t n_antenna, size_t direction,
+    size_t n_solutions, size_t n_antenna, size_t n_channel_blocks, size_t direction,
     cu::DeviceMemory& solution_map, cu::DeviceMemory& solutions,
     cu::DeviceMemory& model, cu::DeviceMemory& residual_in,
     cu::DeviceMemory& residual_temp, cu::DeviceMemory& numerator,
-    cu::DeviceMemory& denominator) {
+    cu::DeviceMemory& denominator, struct sizes sizes) {
   const size_t block_dim = BLOCK_SIZE;
-  const size_t grid_dim = (n_visibilities + block_dim) / block_dim;
+  // const size_t grid_dim = (n_visibilities + block_dim) / block_dim;
+  const dim3 grid_dim(n_channel_blocks, (n_visibilities + block_dim) / block_dim);
 
   const size_t direction_offset = direction * n_visibilities;
   const unsigned int* solution_map_direction =
       Cast<const unsigned int>(solution_map) + direction_offset;
   const cuFloatComplex* model_direction =
       Cast<const cuFloatComplex>(model) + direction_offset;
+
+  
   SolveScalarDirectionKernel<<<grid_dim, block_dim, 0, stream>>>(
       n_visibilities, n_direction_solutions, n_solutions, n_antenna, solution_map_direction,
       Cast<const cuDoubleComplex>(solutions), model_direction,
       Cast<const cuFloatComplex>(residual_in),
       Cast<cuFloatComplex>(residual_temp), Cast<cuFloatComplex>(numerator),
-      Cast<float>(denominator));
+      Cast<float>(denominator), sizes);
 
   cudaCheckError();
 }
@@ -179,31 +194,42 @@ __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
                                const unsigned int* solution_map,
                                const cuDoubleComplex* solutions,
                                const cuFloatComplex* model,
-                               cuFloatComplex* residual) {
-  const size_t vis_index = blockIdx.x * blockDim.x + threadIdx.x;
+                               cuFloatComplex* residual, struct sizes sizes) {
+  const size_t vis_index = blockIdx.y * blockDim.y + threadIdx.x;
+  const size_t ch_block = blockIdx.x;
+  // const size_t n_channel_blocks = blockDim.x;
+
+  // printf("sizes: %lu %lu %lu %lu vis_index: %lu, channel_block: %lu\n", (unsigned long) sizes.solution_map, (unsigned long) sizes.solutions, (unsigned long) sizes.next_solutions, (unsigned long) sizes.model, (unsigned long) vis_index, (unsigned long) ch_block);
 
   if (vis_index >= n_visibilities) {
     return;
-  }
+  };
+  
+  // Calculate offsets for this channel block (don't modify the original pointers)
+  const size_t residual_offset = ch_block * sizes.residual / sizeof(cuFloatComplex);
+  const size_t solutions_offset = ch_block * sizes.solutions / sizeof(cuDoubleComplex);
+  
   for (size_t direction = 0; direction < n_directions; direction++) {
     const size_t direction_offset = direction * n_visibilities;
     const unsigned int* solution_map_direction =
-        solution_map + direction_offset;
-    const cuFloatComplex* model_direction = model + direction_offset;
+        solution_map + direction_offset + ch_block * sizes.solution_map / sizeof(unsigned int);
+    const cuFloatComplex* model_direction = model + direction_offset + ch_block * sizes.model / sizeof(cuFloatComplex);
+    // printf("model_direction: %p, sizes: %p\n", model_direction, residual);
     AddOrSubtractScalar<false>(
         vis_index, n_solutions, n_antenna, solution_map_direction,
-        solutions, model_direction,
-        residual, residual);  // in-place
+        solutions + solutions_offset, model_direction,
+        residual + residual_offset, residual + residual_offset);  // in-place
   }
+
 }
 
 void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
-                          size_t n_visibilities, size_t n_solutions, size_t n_antenna,
+                          size_t n_visibilities, size_t n_solutions, size_t n_antenna, size_t n_channel_blocks,
                           cu::DeviceMemory& solution_map,
                           cu::DeviceMemory& solutions, cu::DeviceMemory& model,
-                          cu::DeviceMemory& residual) {
+                          cu::DeviceMemory& residual, struct sizes sizes) {
   const size_t block_dim = BLOCK_SIZE;
-  const size_t grid_dim = (n_visibilities + block_dim) / block_dim;
+  const dim3 grid_dim(n_channel_blocks, (n_visibilities + block_dim) / block_dim);
 
 
 
@@ -211,7 +237,8 @@ void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
       n_directions, n_visibilities, n_solutions, n_antenna,
       Cast<const unsigned int>(solution_map),
       Cast<const cuDoubleComplex>(solutions), Cast<const cuFloatComplex>(model),
-      Cast<cuFloatComplex>(residual));
+      Cast<cuFloatComplex>(residual), sizes);
+  cudaCheckError();
 }
 
 __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
@@ -250,12 +277,12 @@ __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
 
 void LaunchScalarSolveNextSolutionKernel(
     cudaStream_t stream, size_t n_antennas, size_t n_visibilities,
-    size_t n_direction_solutions, size_t n_solutions, size_t direction,
+    size_t n_direction_solutions, size_t n_solutions, size_t n_channel_blocks, size_t direction,
     cu::DeviceMemory& solution_map, cu::DeviceMemory& next_solutions,
     cu::DeviceMemory& numerator, cu::DeviceMemory& denominator) {
 
   const size_t block_dim = BLOCK_SIZE;
-  const size_t grid_dim = (n_antennas + block_dim - 1) / block_dim;
+  const dim3 grid_dim(n_channel_blocks, (n_visibilities + block_dim) / block_dim);
 
   const size_t direction_offset = direction * n_visibilities;
 
