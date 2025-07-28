@@ -196,7 +196,7 @@ __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
         residual, residual);  // in-place
   }
 }
-// TODO: Error is here, fix please
+
 void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
                           size_t n_visibilities, size_t n_solutions, size_t n_antenna,
                           cu::DeviceMemory& solution_map,
