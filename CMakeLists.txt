@@ -86,6 +86,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/CMake)
 # difference in the handling of NaN. Learn the details at
 # https://jira.skatelescope.org/browse/AST-1502.
 add_compile_options(
+        -w
   -Wall
   -Wnon-virtual-dtor
   -Wzero-as-null-pointer-constant

@@ -50,7 +50,7 @@ std::unique_ptr<SolverBase> CreateScalarSolver(SolverAlgorithm algorithm,
         if (settings.solver_data_use == SolverDataUse::kSingle)
           return std::make_unique<
               IterativeScalarSolverCuda<std::complex<float>>>(
-              settings.keep_host_buffers);
+              settings.keep_host_buffers, settings.gpu_parallel_channel_blocks);
         break;
       default:
         break;

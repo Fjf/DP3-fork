@@ -179,6 +179,8 @@ struct Settings {
   // keep host buffers between solve iteration
   // for the GPU solver
   const bool keep_host_buffers;
+  // How many channel blocks may be chunked to be sent to GPU in parallel
+  const size_t gpu_parallel_channel_blocks;
   // Number of iterations for the low-rank approximation (LRA) method
   const size_t n_lra_iterations;
   // In each lra iteration, the number of power-method iterations to take

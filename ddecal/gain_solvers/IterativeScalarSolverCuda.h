@@ -20,7 +20,8 @@ namespace ddecal {
 template <typename VisMatrix>
 class IterativeScalarSolverCuda final : public SolverBase {
  public:
-  IterativeScalarSolverCuda(bool keep_buffers = false);
+  IterativeScalarSolverCuda(bool keep_buffers = false,
+                            size_t parallel_channel_blocks = 1);
   SolveResult Solve(const SolveData<VisMatrix>& data,
                     std::vector<std::vector<DComplex>>& solutions, double time,
                     std::ostream* stat_stream) override;
@@ -32,15 +33,17 @@ class IterativeScalarSolverCuda final : public SolverBase {
  private:
   void AllocateGPUBuffers(const SolveData<VisMatrix>& data);
   void DeallocateHostBuffers();
-  void AllocateHostBuffers(const SolveData<VisMatrix>& data);
+  void AllocateHostBuffers(const SolveData<VisMatrix>& data,
+                           size_t n_chunk_ids);
 
   void CopyHostToHost(size_t chunk_id, bool first_iteration,
                       const SolveData<VisMatrix>& data,
                       const std::vector<std::vector<DComplex>>& solutions,
                       cu::Stream& stream);
 
-  void CopyHostToDevice(size_t ch_block_id, size_t buffer_id, cu::Stream& stream,
-                        cu::Event& event, const SolveData<VisMatrix>& data);
+  void CopyHostToDevice(size_t ch_block_id, size_t buffer_id,
+                        cu::Stream& stream, cu::Event& event,
+                        const SolveData<VisMatrix>& data);
 
   void PostProcessing(size_t& iteration, double time,
                       bool has_previously_converged, bool& has_converged,
@@ -66,7 +69,6 @@ class IterativeScalarSolverCuda final : public SolverBase {
   std::unique_ptr<cu::Stream> host_to_device_stream_;
   std::unique_ptr<cu::Stream> device_to_host_stream_;
 
- 
   struct sizes sizes;
   size_t chunk_size;
 

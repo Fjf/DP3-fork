@@ -167,6 +167,7 @@ Settings::Settings(const common::ParameterSet& _parset,
                              : 0.0),
       use_gpu(GetBool("usegpu", 0)),
       keep_host_buffers(GetBool("keep_host_buffers", 0)),
+      gpu_parallel_channel_blocks(GetUint("gpu_parallel_channel_blocks", 1)),
       n_lra_iterations((solver_algorithm == SolverAlgorithm::kLowRank)
                            ? GetUint("lra.iterations", 25)
                            : 1),
