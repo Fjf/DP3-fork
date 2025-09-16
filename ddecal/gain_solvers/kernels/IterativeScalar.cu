@@ -12,7 +12,7 @@
 
 #include <iostream>
 
-#define BLOCK_SIZE 1
+#define BLOCK_SIZE 256
 
 #define cudaCheckError() {                                      \
  cudaError_t e=cudaGetLastError();                                 \
@@ -195,7 +195,7 @@ __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
                                const cuDoubleComplex* solutions,
                                const cuFloatComplex* model,
                                cuFloatComplex* residual, struct sizes sizes) {
-  const size_t vis_index = blockIdx.y * blockDim.y + threadIdx.x;
+  const size_t vis_index = blockIdx.y * blockDim.x + threadIdx.x;
   const size_t ch_block = blockIdx.x;
   // const size_t n_channel_blocks = blockDim.x;
 

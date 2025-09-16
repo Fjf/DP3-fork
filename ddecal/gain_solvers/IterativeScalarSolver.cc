@@ -269,6 +269,9 @@ IterativeScalarSolver<VisMatrix>::Solve(
       MakeOptionalRecursiveFor();
   do {
     MakeSolutionsFinite1Pol(solutions);
+    if (iteration == 1) {
+      DumpSolutionsToFile2(solutions, "initial_dump_CPU.txt", iteration);
+    }
 
     // Sequential processing (parallelization disabled)
     // for (size_t ch_block = 0; ch_block < NChannelBlocks(); ++ch_block) {
@@ -300,11 +303,15 @@ IterativeScalarSolver<VisMatrix>::Solve(
 
     has_previously_converged = has_converged || has_previously_converged;
 
-    // DumpSolutionsToFile2(solutions, "solutions_dump_CPU.txt", iteration);
-    // exit(0);  // Debugging exit point
+
+    if (iteration == 100) {
+      DumpSolutionsToFile2(solutions, "solutions_dump_CPU.txt", iteration);
+      exit(0);
+    }
 
   } while (!ReachedStoppingCriterion(iteration, has_converged,
                                      constraints_satisfied, step_magnitudes));
+
 
   // When we have not converged yet, we set the nr of iterations to the max+1,
   // so that non-converged iterations can be distinguished from converged ones.
@@ -331,7 +338,7 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
 
 
 
-  // PrintVectorSummary(v_residual, "v_residual_post_kernel");
+  PrintVectorSummary(v_residual, "v_residual_post_kernel");
 
 
   const std::vector<VisMatrix> v_copy = v_residual;
@@ -383,7 +390,7 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
     //   }
     // }
     
-    // PrintVectorSummary(v_residual, "v_residual_post_kernel_2");
+    PrintVectorSummary(v_residual, "v_residual_post_kernel_2");
     // PrintVectorSummary(solutions, "solutions_post_solve_direction");
     
     // Analyze next_solutions after solving direction
@@ -405,6 +412,7 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
     // if (direction == 0) exit(0);  // Exit after first direction only
 
   }
+  exit(0);
 }
 
 template <typename VisMatrix>

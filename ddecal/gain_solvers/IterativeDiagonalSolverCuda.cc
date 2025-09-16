@@ -719,7 +719,7 @@ SolverBase::SolveResult IterativeDiagonalSolverCuda<VisMatrix>::Solve(
         // Record that the output is copied
         device_to_host_stream_->record(output_copied_events[ch_block]);
       }  // end for ch_block
-
+        
       // Wait for next solutions to be copied
       device_to_host_stream_->synchronize();
 
@@ -732,7 +732,6 @@ SolverBase::SolveResult IterativeDiagonalSolverCuda<VisMatrix>::Solve(
                      next_solutions, step_magnitudes, stat_stream);
       nvtxRangeEnd(nvtx_range_cpu);
     } while (!done);
-
     // When we have not converged yet, we set the nr of iterations to the max+1,
     // so that non-converged iterations can be distinguished from converged ones.
     if (has_converged && constraints_satisfied) {
