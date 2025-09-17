@@ -402,8 +402,10 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
     // PrintVectorSummary(solutions, "solutions_post_solve_direction");
     
     // Analyze next_solutions after solving direction
-    // PrintSolutionTensorSummary(next_solutions, "next_solutions_post_solve_direction", ch_block);
-    
+    PrintSolutionTensorSummary(next_solutions, "next_solutions_post_solve_direction", ch_block);
+    std::cout << "Press Enter to continue..." << std::endl;
+    std::cin.get();
+
     // Add count of non-zero model values
     size_t total_model_values = 0;
     size_t non_zero_model_values = 0;

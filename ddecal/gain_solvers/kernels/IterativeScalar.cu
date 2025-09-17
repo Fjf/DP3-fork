@@ -248,7 +248,11 @@ __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
                                         const cuFloatComplex* numerator,
                                         const float* denominator,
                                         cuDoubleComplex* next_solutions) {
-  const size_t antenna = blockIdx.x * blockDim.x + threadIdx.x;
+  const size_t ch_block = blockIdx.x;
+  const size_t antenna = blockIdx.y * blockDim.x + threadIdx.x;
+
+  const size_t n_visibilities = n_direction_solutions * n_antennas;
+
 
   if (antenna >= n_antennas) {
     return;
@@ -259,10 +263,10 @@ __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
     const size_t solution_index = relative_solution + solution_map[0];
 
 
-    const size_t dest_idx = antenna * n_solutions + solution_index;
+    const size_t dest_idx = (ch_block * n_visibilities) + antenna * n_solutions + solution_index;
 
 
-    const size_t index = antenna * n_direction_solutions + relative_solution;
+    const size_t index = (antenna * n_direction_solutions + relative_solution);
 
     // Print values being used
     if (denominator[index * 2] == 0.0) {
@@ -300,11 +304,14 @@ __global__ void StepScalarKernel(const size_t n_visibilities,
                            const cuDoubleComplex* solutions,
                            cuDoubleComplex* next_solutions, bool phase_only,
                            double step_size) {
-  const size_t vis_index = blockIdx.x * blockDim.x + threadIdx.x;
+  const size_t ch_block = blockIdx.x;
+  const size_t vis = blockIdx.y * blockDim.x + threadIdx.x;
 
-  if (vis_index >= n_visibilities) {
+  if (vis >= n_visibilities) {
     return;
   }
+
+  const size_t vis_index = (ch_block * n_visibilities) + vis;
 
   if (phase_only) {
     // In phase only mode, a step is made along the complex circle,
@@ -325,12 +332,12 @@ __global__ void StepScalarKernel(const size_t n_visibilities,
   }
 }
 
-void LaunchScalarStepKernel(cudaStream_t stream, size_t n_visibilities,
+void LaunchScalarStepKernel(cudaStream_t stream, size_t n_visibilities, size_t n_channel_blocks,
                       cu::DeviceMemory& solutions,
                       cu::DeviceMemory& next_solutions, bool phase_only,
                       double step_size) {
   const size_t block_dim = BLOCK_SIZE;
-  const size_t grid_dim = (n_visibilities + block_dim) / block_dim;
+  const dim3 grid_dim(n_channel_blocks, (n_visibilities + block_dim) / block_dim);
 
   StepScalarKernel<<<grid_dim, block_dim, 0, stream>>>(
       n_visibilities, Cast<const cuDoubleComplex>(solutions),
