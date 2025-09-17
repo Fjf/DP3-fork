@@ -596,10 +596,18 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToHost(
 
 }
 
+
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
     size_t chunk_id, size_t buffer_id, cu::Stream& stream, cu::Event& event,
     const SolveData<VisMatrix>& data) {
+  if (chunk_id == 0) {
+    stream.memcpyHtoDAsync(*gpu_buffers_.solutions, *host_buffers_.solutions,
+    sizes.solutions);
+    stream.memcpyHtoDAsync(*gpu_buffers_.next_solutions, *host_buffers_.next_solutions,
+                           sizes.next_solutions);
+  }
+
   cu::HostMemory& host_solution_map = host_buffers_.solution_map[chunk_id];
   cu::HostMemory& host_model = host_buffers_.model[chunk_id];
   cu::HostMemory& host_residual = host_buffers_.residual[chunk_id];
@@ -617,8 +625,6 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
   void* host_residual_ptr = host_residual;
   stream.memcpyHtoDAsync(device_residual, host_residual,
                          sizes.residual * chunk_size);
-  stream.memcpyHtoDAsync(*gpu_buffers_.solutions, *host_buffers_.solutions,
-                         sizes.solutions);
 
 }
 template <typename VisMatrix>
@@ -848,15 +854,14 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
             gpu_buffers_.residual[buffer_id], gpu_buffers_.residual[2],
             gpu_buffers_.model[buffer_id], *gpu_buffers_.numerator,
             *gpu_buffers_.denominator);
-std::cout << "Press Enter to continue..." << std::endl;
-std::cin.get();
+
         
         execute_stream_->record(compute_finished_events[chunk_id]);
         // Wait for the computation to finish
       }  // end for ch_block
 
       const size_t n_visibilities = data.ChannelBlock(0).NVisibilities();
-        device_to_host_stream_->wait(compute_finished_events[n_chunk_ids-1]);
+      device_to_host_stream_->wait(compute_finished_events[n_chunk_ids-1]);
 
       LaunchScalarStepKernel(*device_to_host_stream_, n_visibilities, *gpu_buffers_.solutions,
                       *gpu_buffers_.next_solutions, phase_only, step_size);
