@@ -394,14 +394,11 @@ void PerformIteration(
 
   }
 
-  exit(0);
+  // exit(0);
 
   
 
-  LaunchStepKernel(stream, n_visibilities, device_solutions,
-                   device_next_solutions, phase_only, step_size);
 }
-
 template <typename VisMatrix>
 std::tuple<size_t, size_t, size_t> ComputeArrayDimensions(
     const dp3::ddecal::SolveData<VisMatrix>& data) {
@@ -453,12 +450,14 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
       std::make_unique<cu::DeviceMemory>(sizes.numerator * chunk_size);
   gpu_buffers_.denominator =
       std::make_unique<cu::DeviceMemory>(sizes.denominator * chunk_size);
+  gpu_buffers_.next_solutions =
+      std::make_unique<cu::DeviceMemory>(sizes.next_solutions);
+  gpu_buffers_.solutions =
+      std::make_unique<cu::DeviceMemory>(sizes.solutions);
 
   // Allocating two buffers allows double buffering.
   for (size_t i = 0; i < 2; i++) {
     gpu_buffers_.solution_map.emplace_back(sizes.solution_map * chunk_size);
-    gpu_buffers_.solutions.emplace_back(sizes.solutions * chunk_size);
-    gpu_buffers_.next_solutions.emplace_back(sizes.next_solutions * chunk_size);
     gpu_buffers_.model.emplace_back(sizes.model * chunk_size);
   }
 
@@ -475,13 +474,7 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
       if (!mem)
         throw std::runtime_error("solution_map buffer allocation failed");
     }
-    for (const auto& mem : gpu_buffers_.solutions) {
-      if (!mem) throw std::runtime_error("solutions buffer allocation failed");
-    }
-    for (const auto& mem : gpu_buffers_.next_solutions) {
-      if (!mem)
-        throw std::runtime_error("next_solutions buffer allocation failed");
-    }
+
     for (const auto& mem : gpu_buffers_.model) {
       if (!mem) throw std::runtime_error("model buffer allocation failed");
     }
@@ -496,7 +489,13 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
     if (!gpu_buffers_.denominator) {
       throw std::runtime_error("denominator buffer allocation failed");
     }
-
+    if (!gpu_buffers_.solutions) {
+      throw std::runtime_error("solutions buffer allocation failed");
+    }
+    if (!gpu_buffers_.next_solutions) {
+      throw std::runtime_error("next_solutions buffer allocation failed");
+    }
+    
     // Verify CUDA device has enough memory
     size_t free, total;
     cudaMemGetInfo(&free, &total);
@@ -508,8 +507,8 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateGPUBuffers(
     // Clean up any allocated buffers
     // gpu_buffers_.antenna_pairs.clear();
     gpu_buffers_.solution_map.clear();
-    gpu_buffers_.solutions.clear();
-    gpu_buffers_.next_solutions.clear();
+    gpu_buffers_.solutions.reset();
+    gpu_buffers_.next_solutions.reset();
     gpu_buffers_.model.clear();
     gpu_buffers_.residual.clear();
     gpu_buffers_.numerator.reset();
@@ -542,7 +541,9 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateHostBuffers(
 
   try {
     host_buffers_.next_solutions =
-        std::make_unique<cu::HostMemory>(sizes.next_solutions * chunk_size);
+        std::make_unique<cu::HostMemory>(sizes.next_solutions);
+    host_buffers_.solutions =
+        std::make_unique<cu::HostMemory>(sizes.solutions);
   } catch (const std::exception& e) {
     std::cerr << "ERROR allocating host_buffers_.next_solutions: " << e.what()
               << std::endl;
@@ -551,17 +552,17 @@ void IterativeScalarSolverCuda<VisMatrix>::AllocateHostBuffers(
   for (size_t chunk_ids = 0; chunk_ids < n_chunk_ids; chunk_ids ++) {
     host_buffers_.model.emplace_back(sizes.model * chunk_size);
     host_buffers_.residual.emplace_back(sizes.residual * chunk_size);
-    host_buffers_.solutions.emplace_back(sizes.solutions * chunk_size);
     host_buffers_.solution_map.emplace_back(sizes.solution_map * chunk_size);
   }
+
 }
 
 template <typename VisMatrix>
 void IterativeScalarSolverCuda<VisMatrix>::DeallocateHostBuffers() {
   host_buffers_.next_solutions.reset();
+  host_buffers_.solutions.reset();
   host_buffers_.model.clear();
   host_buffers_.residual.clear();
-  host_buffers_.solutions.clear();
   host_buffers_.solution_map.clear();
   host_buffers_initialized_ = false;
 }
@@ -577,12 +578,9 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToHost(
     const ChannelBlockData<VisMatrix>& channel_block_data =
         data.ChannelBlock(ch_block);
     void* host_model = host_buffers_.model[chunk_id];
-    void* host_solutions = host_buffers_.solutions[chunk_id];
     memcpy(host_model + sizes.model * (ch_block % chunk_size),
                            &channel_block_data.ModelVisibility(0, 0),
                            sizes.model);
-    memcpy(host_solutions + sizes.solutions * (ch_block % chunk_size),
-                           solutions[ch_block].data(), sizes.solutions);
     if (first_iteration) {
       void* host_residual = host_buffers_.residual[chunk_id];
       void* host_solution_map = host_buffers_.solution_map[chunk_id];
@@ -604,12 +602,10 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
   cu::HostMemory& host_solution_map = host_buffers_.solution_map[chunk_id];
   cu::HostMemory& host_model = host_buffers_.model[chunk_id];
   cu::HostMemory& host_residual = host_buffers_.residual[chunk_id];
-  cu::HostMemory& host_solutions = host_buffers_.solutions[chunk_id];
 
   cu::DeviceMemory& device_solution_map = gpu_buffers_.solution_map[buffer_id];
   cu::DeviceMemory& device_model = gpu_buffers_.model[buffer_id];
   cu::DeviceMemory& device_residual = gpu_buffers_.residual[buffer_id];
-  cu::DeviceMemory& device_solutions = gpu_buffers_.solutions[buffer_id];
 
 
   stream.memcpyHtoDAsync(device_solution_map, host_solution_map,
@@ -620,8 +616,8 @@ void IterativeScalarSolverCuda<VisMatrix>::CopyHostToDevice(
   void* host_residual_ptr = host_residual;
   stream.memcpyHtoDAsync(device_residual, host_residual,
                          sizes.residual * chunk_size);
-  stream.memcpyHtoDAsync(device_solutions, host_solutions,
-                         sizes.solutions * chunk_size);
+  stream.memcpyHtoDAsync(*gpu_buffers_.solutions, *host_buffers_.solutions,
+                         sizes.solutions);
 
 }
 template <typename VisMatrix>
@@ -691,13 +687,11 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
     }
 
     // Validate essential buffers are allocated
-    if (host_buffers_.model.empty() || host_buffers_.residual.empty() ||
-        host_buffers_.solutions.empty()) {
+    if (host_buffers_.model.empty() || host_buffers_.residual.empty() ) {
       throw std::runtime_error("Host buffer vectors not properly allocated");
     }
 
-    if (gpu_buffers_.solution_map.empty() || gpu_buffers_.solutions.empty() ||
-        gpu_buffers_.next_solutions.empty() || gpu_buffers_.model.empty() ||
+    if (gpu_buffers_.solution_map.empty() ||  gpu_buffers_.model.empty() ||
         gpu_buffers_.residual.empty()) {
       throw std::runtime_error("GPU buffer vectors not properly allocated");
     }
@@ -839,9 +833,6 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
         }
 
         execute_stream_->wait(input_copied_events[chunk_id]);
-        if (chunk_id > 1) {
-          execute_stream_->wait(output_copied_events[chunk_id - 2]);
-        }
 
         if (iteration == 1) {
           DumpSolutionsToFile(solutions, "initial_dump_GPU.txt", iteration);
@@ -851,30 +842,44 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
             phase_only, step_size, data, *execute_stream_,
             NAntennas(), NSubSolutions(), NDirections(), chunk_size,
             gpu_buffers_.solution_map[buffer_id],
-            gpu_buffers_.solutions[buffer_id],
-            gpu_buffers_.next_solutions[buffer_id],
+            *gpu_buffers_.solutions,
+            *gpu_buffers_.next_solutions,
             gpu_buffers_.residual[buffer_id], gpu_buffers_.residual[2],
             gpu_buffers_.model[buffer_id], *gpu_buffers_.numerator,
             *gpu_buffers_.denominator);
 
+        
         execute_stream_->record(compute_finished_events[chunk_id]);
         // Wait for the computation to finish
-        device_to_host_stream_->wait(compute_finished_events[chunk_id]);
+      }  // end for ch_block
 
-        // Copy next solutions back to host
-        const size_t n_visibilities = next_solutions.shape(1) *
-                                      next_solutions.shape(2) *
-                                      next_solutions.shape(3);
+      const size_t n_visibilities = data.ChannelBlock(0).NVisibilities();
+        device_to_host_stream_->wait(compute_finished_events[n_chunk_ids-1]);
+
+      LaunchScalarStepKernel(*device_to_host_stream_, n_visibilities, *gpu_buffers_.solutions,
+                      *gpu_buffers_.next_solutions, phase_only, step_size);
+
+
 
 
         device_to_host_stream_->memcpyDtoHAsync(
-            &next_solutions(chunk_id * chunk_size, 0, 0, 0),
-            gpu_buffers_.next_solutions[buffer_id],
-            SizeOfNextSolutions(n_visibilities) * chunk_size);
+            &next_solutions(0, 0, 0, 0),
+            *gpu_buffers_.next_solutions,
+            SizeOfSolutions(NVisibilities())
+          );
         // Record that the output is copied
-        device_to_host_stream_->record(output_copied_events[chunk_id]);
-      }  // end for ch_block
-
+      // Print summary of device next solutions after step kernel
+      {
+        size_t n_next_solution_elements = sizes.next_solutions / sizeof(std::complex<double>);
+        std::vector<std::complex<double>> host_next_solutions(n_next_solution_elements);
+        cudaError_t err = cudaMemcpy(host_next_solutions.data(), *gpu_buffers_.next_solutions, sizes.next_solutions, cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess) {
+          std::cerr << "cudaMemcpy for device next solutions failed: " << cudaGetErrorString(err) << std::endl;
+        } else {
+          PrintVectorSummary(host_next_solutions, "device_next_solutions_post_step_kernel");
+        }
+      }
+      exit(0);
       // Wait for next solutions to be copied
       device_to_host_stream_->synchronize();
 
@@ -897,6 +902,8 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
         exit(0);
       }
     } while (!done);
+
+
 
 
     // When we have not converged yet, we set the nr of iterations to the max+1,

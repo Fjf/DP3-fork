@@ -243,7 +243,6 @@ IterativeScalarSolver<VisMatrix>::Solve(
 
   SolutionTensor next_solutions({NChannelBlocks(), NAntennas(), NSubSolutions(),
                                  NSolutionPolarizations()});
-
   SolveResult result;
 
   // Visibility vector v_residual[cb][vis] of size NChannelBlocks() x
@@ -283,13 +282,20 @@ IterativeScalarSolver<VisMatrix>::Solve(
     aocommon::RunStaticFor<size_t>(
     0, NChannelBlocks(), [&](size_t ch_block, size_t end_index) {
       for (; ch_block < end_index; ++ch_block) {
+        if (ch_block > 2) break;
         PerformIteration(ch_block, data.ChannelBlock(ch_block),
                           v_residual[ch_block], solutions[ch_block],
                           next_solutions);
       }
     });
 
+
     Step(solutions, next_solutions);
+
+    std::vector<std::complex<double>> all_solutions(next_solutions.begin(), next_solutions.end());
+    PrintVectorSummary(all_solutions, "solutions_post_kernel_all");
+
+    exit(0);
 
     constraints_satisfied =
         ApplyConstraints(iteration, time, has_previously_converged, result,
@@ -304,7 +310,8 @@ IterativeScalarSolver<VisMatrix>::Solve(
     has_previously_converged = has_converged || has_previously_converged;
 
 
-    if (iteration == 100) {
+    if (ReachedStoppingCriterion(iteration, has_converged,
+                                     constraints_satisfied, step_magnitudes)) {
       DumpSolutionsToFile2(solutions, "solutions_dump_CPU.txt", iteration);
       exit(0);
     }
@@ -412,7 +419,6 @@ void IterativeScalarSolver<VisMatrix>::PerformIteration(
     // if (direction == 0) exit(0);  // Exit after first direction only
 
   }
-  exit(0);
 }
 
 template <typename VisMatrix>

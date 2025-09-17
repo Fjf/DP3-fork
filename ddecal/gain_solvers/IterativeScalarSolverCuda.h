@@ -102,10 +102,10 @@ class IterativeScalarSolverCuda final : public SolverBase {
     std::vector<cu::DeviceMemory> antenna_pairs;
     // <2>[n_directions][n_visibilities], uint32_t
     std::vector<cu::DeviceMemory> solution_map;
-    // <2>[n_visibilities], DComplex
-    std::vector<cu::DeviceMemory> solutions;
-    // <2>[n_visibilities], DComplex
-    std::vector<cu::DeviceMemory> next_solutions;
+    // [n_visibilities], DComplex
+    std::unique_ptr<cu::DeviceMemory> solutions;
+    // [n_visibilities], DComplex
+    std::unique_ptr<cu::DeviceMemory> next_solutions;
     // <2>[n_directions][n_visibilities], MC2x2F
     std::vector<cu::DeviceMemory> model;
     // <3>[n_visibilities], MC2x2F
@@ -131,8 +131,8 @@ class IterativeScalarSolverCuda final : public SolverBase {
     std::vector<cu::HostMemory> model;
     // <n_channelblocks>[n_visibilities], DFloat
     std::vector<cu::HostMemory> residual;
-    // <n_channelblocks>[n_visibilities], DComplex
-    std::vector<cu::HostMemory> solutions;
+    // [n_visibilities], DComplex
+    std::unique_ptr<cu::HostMemory> solutions;
     // [n_channelblocks][n_antennas][n_polarizations], DComplex
     std::unique_ptr<cu::HostMemory> next_solutions;
     // <n_channelblocks>[n_visibilities], std::pair<uin32_t, uint32_t>
