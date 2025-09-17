@@ -279,15 +279,16 @@ IterativeScalarSolver<VisMatrix>::Solve(
     //                    next_solutions);
     // }
 
-    aocommon::RunStaticFor<size_t>(
-    0, NChannelBlocks(), [&](size_t ch_block, size_t end_index) {
-      for (; ch_block < end_index; ++ch_block) {
-        if (ch_block > 2) break;
+    // aocommon::RunStaticFor<size_t>(
+    // 0, NChannelBlocks(), [&](size_t ch_block, size_t end_index) {
+      for (size_t ch_block = 0; ch_block < NChannelBlocks(); ++ch_block) {
+      
         PerformIteration(ch_block, data.ChannelBlock(ch_block),
                           v_residual[ch_block], solutions[ch_block],
                           next_solutions);
+
       }
-    });
+    // });
 
 
     Step(solutions, next_solutions);

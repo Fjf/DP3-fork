@@ -355,6 +355,7 @@ void PerformIteration(
                              device_model, device_residual, sizes);
 
   // Print summary of device residual after kernel, similar to CPU code
+  cudaDeviceSynchronize();  // Ensure all GPU work is done before copying
   {
     size_t n_residual_elements = sizes.residual / sizeof(std::complex<float>);
     std::vector<std::complex<float>> host_residual(n_residual_elements);
@@ -847,7 +848,8 @@ SolverBase::SolveResult IterativeScalarSolverCuda<VisMatrix>::Solve(
             gpu_buffers_.residual[buffer_id], gpu_buffers_.residual[2],
             gpu_buffers_.model[buffer_id], *gpu_buffers_.numerator,
             *gpu_buffers_.denominator);
-
+std::cout << "Press Enter to continue..." << std::endl;
+std::cin.get();
         
         execute_stream_->record(compute_finished_events[chunk_id]);
         // Wait for the computation to finish
