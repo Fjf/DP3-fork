@@ -79,6 +79,7 @@ __device__ void SolveScalarDirection(size_t ch_block, size_t vis_index, size_t n
 
   const size_t rel_solution_index = solution_index - solution_map[0];
 
+    printf("%f %f %f\n", solution_antenna_1.x, solution_antenna_2.x);
 
 
   // Calculate the contribution of this baseline for both antennas
@@ -118,14 +119,14 @@ __device__ void SolveScalarDirection(size_t ch_block, size_t vis_index, size_t n
       changed_model = scalar_result;
 
        result = cuCmulf(cuConjf(residual[vis_index]), scalar_result);
+
     }
 
     const size_t full_solution_index =
         antenna * n_direction_solutions + rel_solution_index;
-    atomicAdd(&numerator[full_solution_index * 2].x, result.x);
-    atomicAdd(&numerator[full_solution_index * 2].y, result.y);
-
-    atomicAdd(&denominator[full_solution_index * 2],
+    atomicAdd(&numerator[full_solution_index].x, result.x);
+    atomicAdd(&numerator[full_solution_index].y, result.y);
+    atomicAdd(&denominator[full_solution_index],
               cuCabsf(changed_model) * cuCabsf(changed_model));
   }
 }
@@ -163,14 +164,14 @@ __global__ void SolveScalarDirectionKernel(
 
 void LaunchScalarSolveDirectionKernel(
     cudaStream_t stream, size_t n_visibilities, size_t n_direction_solutions,
-    size_t n_solutions, size_t n_antenna, size_t n_channel_blocks, size_t direction,
+    size_t n_solutions, size_t n_antenna, size_t n_parallel_channel_blocks, size_t direction,
     cu::DeviceMemory& solution_map, cu::DeviceMemory& solutions,
     cu::DeviceMemory& model, cu::DeviceMemory& residual_in,
     cu::DeviceMemory& residual_temp, cu::DeviceMemory& numerator,
     cu::DeviceMemory& denominator, struct sizes sizes) {
   const size_t block_dim = BLOCK_SIZE;
   // const size_t grid_dim = (n_visibilities + block_dim) / block_dim;
-  const dim3 grid_dim(n_channel_blocks, (n_visibilities + block_dim) / block_dim);
+  const dim3 grid_dim(n_parallel_channel_blocks, (n_visibilities + block_dim) / block_dim);
 
   const size_t direction_offset = direction * n_visibilities;
   const unsigned int* solution_map_direction =
@@ -224,12 +225,12 @@ __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
 }
 
 void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
-                          size_t n_visibilities, size_t n_solutions, size_t n_antenna, size_t n_channel_blocks,
+                          size_t n_visibilities, size_t n_solutions, size_t n_antenna, size_t n_parallel_channel_blocks,
                           cu::DeviceMemory& solution_map,
                           cu::DeviceMemory& solutions, cu::DeviceMemory& model,
                           cu::DeviceMemory& residual, struct sizes sizes) {
   const size_t block_dim = BLOCK_SIZE;
-  const dim3 grid_dim(n_channel_blocks, (n_visibilities + block_dim) / block_dim);
+  const dim3 grid_dim(n_parallel_channel_blocks, (n_visibilities + block_dim) / block_dim);
 
 
 
@@ -269,12 +270,12 @@ __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
     const size_t index = (antenna * n_direction_solutions + relative_solution);
 
     // Print values being used
-    if (denominator[index * 2] == 0.0) {
+    if (denominator[index] == 0.0) {
       next_solutions[dest_idx] = {CUDART_NAN, CUDART_NAN};
     } else {
       next_solutions[dest_idx] = {
-          numerator[index * 2].x / denominator[index * 2],
-          numerator[index * 2].y / denominator[index * 2]};
+          numerator[index].x / denominator[index],
+          numerator[index].y / denominator[index]};
     }
   }
 }

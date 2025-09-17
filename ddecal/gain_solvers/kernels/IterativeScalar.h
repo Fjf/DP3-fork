@@ -20,7 +20,7 @@ struct sizes {
 
 void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
                                 size_t n_visibilities, size_t n_solutions,
-                                size_t n_antenna, size_t n_channel_blocks,
+                                size_t n_antenna, size_t n_parallel_channel_blocks,
                                 cu::DeviceMemory& solution_map,
                                 cu::DeviceMemory& solutions,
                                 cu::DeviceMemory& model,
@@ -35,7 +35,7 @@ void LaunchScalarSolveNextSolutionKernel(
 
 void LaunchScalarSolveDirectionKernel(
     cudaStream_t stream, size_t n_visibilities, size_t n_direction_solutions,
-    size_t n_solutions, size_t n_antenna, size_t n_channel_blocks,
+    size_t n_solutions, size_t n_antenna, size_t n_parallel_channel_blocks,
     size_t direction, cu::DeviceMemory& solution_map,
     cu::DeviceMemory& solutions, cu::DeviceMemory& model,
     cu::DeviceMemory& residual_in, cu::DeviceMemory& residual_temp,
