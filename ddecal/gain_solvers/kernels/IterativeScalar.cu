@@ -139,11 +139,6 @@ __global__ void SolveScalarDirectionKernel(
   const size_t vis_index = blockIdx.y * blockDim.x + threadIdx.x;
   const size_t ch_block = blockIdx.x;
 
-  // printf("sizes: %lu %lu %lu %lu vis_index: %lu, channel_block: %lu\n", 
-  //       (unsigned long) sizes.solution_map, (unsigned long) sizes.solutions, 
-  //       (unsigned long) sizes.next_solutions, (unsigned long) sizes.model, 
-  //       (unsigned long) vis_index, (unsigned long) ch_block);
-
   if (vis_index >= n_visibilities) {
     return;
   }

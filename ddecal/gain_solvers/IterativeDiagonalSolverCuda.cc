@@ -534,12 +534,11 @@ SolverBase::SolveResult IterativeDiagonalSolverCuda<VisMatrix>::Solve(
 
   // Validate essential buffers are allocated
   if (host_buffers_.model.empty() || host_buffers_.residual.empty() || 
-      host_buffers_.solutions.empty() || host_buffers_.antenna_pairs.empty()) {
+       host_buffers_.antenna_pairs.empty()) {
     throw std::runtime_error("Host buffer vectors not properly allocated");
   }
 
   if (gpu_buffers_.antenna_pairs.empty() || gpu_buffers_.solution_map.empty() ||
-      gpu_buffers_.solutions.empty() || gpu_buffers_.next_solutions.empty() ||
       gpu_buffers_.model.empty() || gpu_buffers_.residual.empty()) {
     throw std::runtime_error("GPU buffer vectors not properly allocated");
   }
