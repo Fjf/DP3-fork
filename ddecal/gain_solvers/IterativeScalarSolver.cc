@@ -287,6 +287,8 @@ IterativeScalarSolver<VisMatrix>::Solve(
                           v_residual[ch_block], solutions[ch_block],
                           next_solutions);
 
+        std::vector<std::complex<double>> all_solutions(next_solutions.begin(), next_solutions.end());
+        PrintVectorSummary(all_solutions, "solutions_post_kernel_all");
       }
     // });
 
@@ -518,6 +520,7 @@ void IterativeScalarSolver<VisMatrix>::SolveDirection(
     for (uint32_t rel_sol = 0; rel_sol != n_dir_solutions; ++rel_sol) {
       const uint32_t solution_index = rel_sol + solution_index0;
       DComplex& destination = next_solutions(ch_block, ant, solution_index, 0);
+      printf("vi=%lu\n", (ch_block * NAntennas() + ant) * n_dir_solutions + solution_index);
       const uint32_t index = ant * n_dir_solutions + rel_sol;
       if (denominator[index] == 0.0) {
         destination = std::numeric_limits<float>::quiet_NaN();

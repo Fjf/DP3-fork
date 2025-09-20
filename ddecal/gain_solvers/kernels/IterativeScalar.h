@@ -28,7 +28,7 @@ void LaunchScalarSubtractKernel(cudaStream_t stream, size_t n_directions,
 
 void LaunchScalarSolveNextSolutionKernel(
     cudaStream_t stream, size_t n_antennas, size_t n_visibilities,
-    size_t n_direction_solutions, size_t n_solutions, size_t n_channel_blocks,
+    size_t n_direction_solutions, size_t n_solutions, size_t n_parallel_channel_blocks,
     size_t direction, cu::DeviceMemory& solution_map,
     cu::DeviceMemory& next_solutions, cu::DeviceMemory& numerator,
     cu::DeviceMemory& denominator);

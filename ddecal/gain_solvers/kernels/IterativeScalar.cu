@@ -204,7 +204,7 @@ __global__ void SubtractScalarKernel(size_t n_directions, size_t n_visibilities,
   // Calculate offsets for this channel block (don't modify the original pointers)
   const size_t residual_offset = ch_block * sizes.residual / sizeof(cuFloatComplex);
   const size_t solutions_offset = ch_block * sizes.solutions / sizeof(cuDoubleComplex);
-  
+
   for (size_t direction = 0; direction < n_directions; direction++) {
     const size_t direction_offset = direction * n_visibilities;
     const unsigned int* solution_map_direction =
@@ -259,10 +259,11 @@ __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
     const size_t solution_index = relative_solution + solution_map[0];
 
 
-    const size_t dest_idx = (ch_block * n_visibilities) + antenna * n_solutions + solution_index;
+    const size_t dest_idx = (ch_block * n_antennas + antenna) * n_direction_solutions + solution_index;
 
 
     const size_t index = (antenna * n_direction_solutions + relative_solution);
+    printf("vi=%lu\n", dest_idx);
 
     // Print values being used
     if (denominator[index] == 0.0) {
@@ -277,12 +278,12 @@ __global__ void SolveNextScalarSolutionKernel(unsigned int n_antennas,
 
 void LaunchScalarSolveNextSolutionKernel(
     cudaStream_t stream, size_t n_antennas, size_t n_visibilities,
-    size_t n_direction_solutions, size_t n_solutions, size_t n_channel_blocks, size_t direction,
+    size_t n_direction_solutions, size_t n_solutions, size_t n_parallel_channel_blocks, size_t direction,
     cu::DeviceMemory& solution_map, cu::DeviceMemory& next_solutions,
     cu::DeviceMemory& numerator, cu::DeviceMemory& denominator) {
 
   const size_t block_dim = BLOCK_SIZE;
-  const dim3 grid_dim(n_channel_blocks, (n_visibilities + block_dim) / block_dim);
+  const dim3 grid_dim(n_parallel_channel_blocks, (n_visibilities + block_dim) / block_dim);
 
   const size_t direction_offset = direction * n_visibilities;
 
@@ -308,7 +309,7 @@ __global__ void StepScalarKernel(const size_t n_visibilities,
   }
 
   const size_t vis_index = (ch_block * n_visibilities) + vis;
-
+  printf("vi=%lu\n", vis_index);
   if (phase_only) {
     // In phase only mode, a step is made along the complex circle,
     // towards the shortest direction.
